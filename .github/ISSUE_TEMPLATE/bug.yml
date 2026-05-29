@@ -1,0 +1,13 @@
+name: "🐛 Bug"
+description: "버그 또는 예외 상황"
+title: "🐛 "
+labels: ["🐛 Bug"]
+body:
+  - type: textarea
+    attributes:
+      label: 💡 버그 설명
+      description: 어떤 문제가 발생했는지 설명해 주세요.
+      placeholder: 예) 특정 API에서 500 오류 발생
+    validations:
+      required: true
+

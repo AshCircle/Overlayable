@@ -1,0 +1,13 @@
+name: "🧹 Chore"
+description: "기타 작업 (설정, 인프라, CI/CD 등)"
+title: "🧹 "
+labels: ["🧹 Chore"]
+body:
+  - type: textarea
+    attributes:
+      label: 📝 작업 설명
+      description: 어떤 설정/환경 작업인지 설명해 주세요.
+      placeholder: 의존성 업데이트, CI 설정 변경, 빌드 스크립트 수정 등
+    validations:
+      required: true
+

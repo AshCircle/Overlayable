@@ -1,0 +1,13 @@
+name: "♻️ Refactor"
+description: "리팩터링 작업"
+title: "♻️ "
+labels: ["♻️ Refactor"]
+body:
+  - type: textarea
+    attributes:
+      label: ♻️ 리팩터링 대상 설명
+      description: 어떤 코드나 구조를 개선할 계획인지 설명해 주세요.
+      placeholder: 중복 로직 제거, 가독성 향상, 모듈화 등
+    validations:
+      required: true
+
