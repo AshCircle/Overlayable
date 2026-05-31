@@ -141,25 +141,29 @@
     dragOrigY = state.y;
     overlayEls.img.style.cursor = 'grabbing';
   });
+  // 드래그 종료: mouseup 과 mousemove 가드에서 공유.
+  function endDrag() {
+    if (!dragging) return;
+    dragging = false;
+    applyState(); // 커서를 grab 으로 복귀 (image 모드일 때)
+  }
   window.addEventListener(
     'mousemove',
     (e) => {
       if (!dragging) return;
+      // 드래그 도중 모드가 바뀌거나(Ctrl 떼기·blur 등) 이미지가 사라지면 즉시 종료.
+      // (이동 적용 전에 가드해 추가 이동 픽셀을 막는다)
+      if (state.mode !== 'image' || !state.visible) {
+        endDrag();
+        return;
+      }
       state.x = dragOrigX + (e.clientX - dragStartX);
       state.y = dragOrigY + (e.clientY - dragStartY);
       applyState();
     },
     true
   );
-  window.addEventListener(
-    'mouseup',
-    () => {
-      if (!dragging) return;
-      dragging = false;
-      applyState(); // 커서를 grab 으로 복귀
-    },
-    true
-  );
+  window.addEventListener('mouseup', endDrag, true);
 
   // ---- 직접 상호작용: 휠 줌(커서 기준) / Shift+휠 회전 ----
   overlayEls.img.addEventListener(
