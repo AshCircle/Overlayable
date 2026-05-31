@@ -15,23 +15,105 @@
   overflow: visible !important;
 }
 
-.imgovl-overlay-img {
+/* frame: 변형(translate/rotate) + 크기(px) 기준 박스. img + 핸들의 부모.
+   scale 을 transform 으로 주지 않고 width/height(px)로 주므로 자식 핸들은 고정 크기를 유지한다. */
+.imgovl-frame {
   position: fixed !important;
   top: 50% !important;
   left: 50% !important;
   transform-origin: center center !important;
-  max-width: none !important;
-  max-height: none !important;
-  width: auto !important;
-  height: auto !important;
   margin: 0 !important;
   padding: 0 !important;
   border: 0 !important;
   display: none; /* 초기 숨김 (apply 가 토글) */
+  pointer-events: none !important; /* 박스 자체는 통과, 자식(img/핸들)만 활성 */
+  will-change: transform, width, height;
+}
+.imgovl-frame.imgovl-image-mode {
+  outline: 1px solid rgba(99, 102, 241, 0.9) !important; /* 선택 박스 표시 */
+}
+
+.imgovl-overlay-img {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  display: block !important;
   user-select: none !important;
   -webkit-user-drag: none !important;
-  will-change: transform, opacity;
+  will-change: opacity;
   pointer-events: none; /* 모드에 따라 inline 으로 토글 */
+}
+
+/* ===== 조작 핸들 (image 모드에서만 표시·활성) ===== */
+.imgovl-handle,
+.imgovl-rot-handle,
+.imgovl-rot-line {
+  position: absolute !important;
+  display: none; /* image 모드 클래스에서만 표시 */
+  pointer-events: none;
+  margin: 0 !important;
+  padding: 0 !important;
+  box-sizing: border-box !important;
+}
+.imgovl-frame.imgovl-image-mode .imgovl-handle,
+.imgovl-frame.imgovl-image-mode .imgovl-rot-handle,
+.imgovl-frame.imgovl-image-mode .imgovl-rot-line {
+  display: block;
+}
+.imgovl-frame.imgovl-image-mode .imgovl-handle,
+.imgovl-frame.imgovl-image-mode .imgovl-rot-handle {
+  pointer-events: auto;
+}
+
+.imgovl-handle {
+  width: 12px !important;
+  height: 12px !important;
+  background: #ffffff !important;
+  border: 1.5px solid #6366f1 !important;
+  border-radius: 2px !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+  transform: translate(-50%, -50%) !important; /* 좌표점 기준 중앙 정렬 */
+}
+
+/* 8개 핸들 위치 (frame 경계 위) + 방향별 커서(회전 미반영 근사) */
+.imgovl-handle-nw { left: 0 !important;    top: 0 !important;    cursor: nwse-resize !important; }
+.imgovl-handle-n  { left: 50% !important;  top: 0 !important;    cursor: ns-resize !important; }
+.imgovl-handle-ne { left: 100% !important; top: 0 !important;    cursor: nesw-resize !important; }
+.imgovl-handle-e  { left: 100% !important; top: 50% !important;  cursor: ew-resize !important; }
+.imgovl-handle-se { left: 100% !important; top: 100% !important; cursor: nwse-resize !important; }
+.imgovl-handle-s  { left: 50% !important;  top: 100% !important; cursor: ns-resize !important; }
+.imgovl-handle-sw { left: 0 !important;    top: 100% !important; cursor: nesw-resize !important; }
+.imgovl-handle-w  { left: 0 !important;    top: 50% !important;  cursor: ew-resize !important; }
+
+/* 회전 핸들 + 연결선 (상단 중앙) */
+.imgovl-rot-line {
+  left: 50% !important;
+  top: -28px !important;
+  width: 0 !important;
+  height: 28px !important;
+  border-left: 1.5px solid #6366f1 !important;
+  transform: translateX(-50%) !important;
+}
+.imgovl-rot-handle {
+  left: 50% !important;
+  top: -28px !important;
+  width: 14px !important;
+  height: 14px !important;
+  background: #ffffff !important;
+  border: 1.5px solid #6366f1 !important;
+  border-radius: 50% !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+  transform: translate(-50%, -50%) !important;
+  cursor: grab !important;
+}
+.imgovl-frame.imgovl-image-mode .imgovl-rot-handle:active {
+  cursor: grabbing !important;
 }
 
 /* ===== 패널 ===== */
