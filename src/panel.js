@@ -90,11 +90,11 @@
       el('div', { class: 'imgovl-row-bottom' }, [scaleMinus, scale.slider, scalePlus]),
     ]);
 
-    // 회전 (−90 슬라이더 +90)
+    // 회전 (−90 슬라이더 +90), 0.1° 단위로 정밀 조절
     const rotation = sliderRow('회전', {
       min: T.ROTATION_MIN,
       max: T.ROTATION_MAX,
-      step: 1,
+      step: 0.1,
       value: 0,
     });
     rotation.slider.addEventListener('input', () => handlers.onRotation(Number(rotation.slider.value)));
@@ -121,7 +121,8 @@
     // ---- 힌트 ----
     const hint = el('div', {
       class: 'imgovl-hint',
-      text: 'Ctrl 홀드 = 이미지 조작(드래그·휠 줌·Shift+휠 회전) / 놓으면 웹 조작',
+      text:
+        'Ctrl 홀드 = 이미지 조작: 본체 드래그=이동, 꼭짓점·모서리=비율 유지 크기조절, 상단 핸들=회전(정밀), 휠=줌 / 놓으면 웹 조작',
     });
 
     // ---- 본문 ----
@@ -185,9 +186,9 @@
       scale.slider.value = String(scalePct);
       scale.valueText.textContent = `${scalePct}%`;
 
-      const rotDeg = Math.round(state.rotation);
+      const rotDeg = T.round(state.rotation, 1);
       rotation.slider.value = String(rotDeg);
-      rotation.valueText.textContent = `${rotDeg}°`;
+      rotation.valueText.textContent = `${rotDeg.toFixed(1)}°`;
 
       const isImageMode = state.mode === 'image';
       badge.textContent = isImageMode ? '이미지 모드' : '웹 모드';

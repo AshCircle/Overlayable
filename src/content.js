@@ -20,6 +20,8 @@
     rotation: 0,
     opacity: 1,
     visible: false, // 이미지 로드/표시 여부
+    naturalW: 0, // 원본 픽셀 크기 (load 시 기록) — frame 크기 산출의 기준
+    naturalH: 0,
     mode: 'web', // 'web' | 'image'
   };
 
@@ -82,23 +84,38 @@
     if (state.src) URL.revokeObjectURL(state.src);
     state.src = URL.createObjectURL(file);
     state.visible = true;
+    state.naturalW = 0; // load 이벤트 전까지는 숨김(naturalW>0 조건)
+    state.naturalH = 0;
     resetTransform(); // 새 이미지는 중앙·기본 크기로
     if (!state.active) state.active = true; // 업로드 시 자동으로 UI 표시
     applyState();
   }
 
   function removeImage() {
+    endGesture(); // 이미지가 사라지는 시점에 잔존 제스처 즉시 정리
     if (state.src) URL.revokeObjectURL(state.src);
     state.src = null;
     state.visible = false;
+    state.naturalW = 0;
+    state.naturalH = 0;
     resetTransform();
     applyState();
   }
+
+  // 이미지 자연 크기 확보(=frame 크기 산출 기준). src 적용 후 load 시 1회 기록.
+  overlayEls.img.addEventListener('load', () => {
+    state.naturalW = overlayEls.img.naturalWidth || 0;
+    state.naturalH = overlayEls.img.naturalHeight || 0;
+    applyState();
+  });
 
   // ---- 모드 전환 (Ctrl 홀드) ----
   function setMode(mode) {
     if (state.mode === mode) return;
     state.mode = mode;
+    // image 모드를 벗어나면 잔존 제스처를 즉시 종료(다음 mousemove까지 미루지 않음).
+    // blur/visibilitychange 는 모두 setMode('web') 을 경유하므로 여기서 일괄 정리된다.
+    if (mode !== 'image') endGesture();
     applyState();
   }
 
@@ -124,46 +141,132 @@
     if (document.hidden) setMode('web');
   });
 
-  // ---- 직접 상호작용: 드래그 이동 ----
-  let dragging = false;
-  let dragStartX = 0;
-  let dragStartY = 0;
-  let dragOrigX = 0;
-  let dragOrigY = 0;
+  // ---- 직접 상호작용: 이동 / 리사이즈(8핸들) / 회전(상단 핸들) ----
+  // 단일 제스처 상태로 통합. type: 'move' | 'resize' | 'rotate'
+  let gesture = null;
 
+  // frame 중심의 화면 좌표(크기와 무관: top/left 50% + translate(-50%,-50%) 기준).
+  function center() {
+    return { x: window.innerWidth / 2 + state.x, y: window.innerHeight / 2 + state.y };
+  }
+
+  // 제스처 종료: mouseup 과 mousemove 가드에서 공유.
+  function endGesture() {
+    if (!gesture) return;
+    gesture = null;
+    applyState(); // 커서 복귀 등
+  }
+
+  // 이동: 이미지 본체 드래그.
   overlayEls.img.addEventListener('mousedown', (e) => {
     if (state.mode !== 'image' || !state.visible) return;
     e.preventDefault();
-    dragging = true;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    dragOrigX = state.x;
-    dragOrigY = state.y;
-    overlayEls.img.style.cursor = 'grabbing';
+    gesture = { type: 'move', startX: e.clientX, startY: e.clientY, origX: state.x, origY: state.y };
+    // host 의 img { cursor: ... !important } 를 이기도록 inline !important 로 고정.
+    overlayEls.img.style.setProperty('cursor', 'grabbing', 'important');
   });
-  // 드래그 종료: mouseup 과 mousemove 가드에서 공유.
-  function endDrag() {
-    if (!dragging) return;
-    dragging = false;
-    applyState(); // 커서를 grab 으로 복귀 (image 모드일 때)
+
+  // 리사이즈: 꼭짓점·모서리 8개 핸들. 반대편을 고정하고 비율을 유지한다.
+  for (const def of overlayEls.HANDLE_DEFS) {
+    overlayEls.handles[def.id].addEventListener('mousedown', (e) => {
+      if (state.mode !== 'image' || !state.visible) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const theta = state.rotation || 0;
+      const s0 = T.clampScale(state.scale ?? 1);
+      const hw0 = (state.naturalW * s0) / 2;
+      const hh0 = (state.naturalH * s0) / 2;
+      const C0 = center();
+      // 반대편 앵커(로컬) → 화면 좌표(드래그 동안 고정).
+      const rav = T.rotateVec(-def.sx * hw0, -def.sy * hh0, theta);
+      gesture = {
+        type: 'resize',
+        sx: def.sx,
+        sy: def.sy,
+        theta,
+        anchorX: C0.x + rav.x,
+        anchorY: C0.y + rav.y,
+      };
+    });
   }
+
+  function applyResize(e) {
+    const { sx, sy, theta, anchorX, anchorY } = gesture;
+    const nW = state.naturalW;
+    const nH = state.naturalH;
+    if (!nW || !nH) return;
+    // 마우스를 앵커 기준 로컬 좌표로 역회전.
+    const v = T.rotateVec(e.clientX - anchorX, e.clientY - anchorY, -theta);
+    let newScale;
+    if (sx !== 0 && sy !== 0) {
+      // 꼭짓점: 두 축 비율 중 큰 값(커서를 따라 비율 유지 확대).
+      newScale = Math.max((sx * v.x) / nW, (sy * v.y) / nH);
+    } else if (sy === 0) {
+      // 좌/우 모서리: 가로 기준(세로는 비율 따라감).
+      newScale = (sx * v.x) / nW;
+    } else {
+      // 상/하 모서리: 세로 기준.
+      newScale = (sy * v.y) / nH;
+    }
+    // 클램프 + 최소 픽셀 보장.
+    const minScale = T.MIN_PX / Math.min(nW, nH);
+    newScale = T.clampScale(Math.max(newScale, minScale));
+
+    const hw = (nW * newScale) / 2;
+    const hh = (nH * newScale) / 2;
+    // 앵커가 고정되도록 새 중심: newCenter = anchor + R(θ)·(sx·hw, sy·hh).
+    const off = T.rotateVec(sx * hw, sy * hh, theta);
+    state.x = anchorX + off.x - window.innerWidth / 2;
+    state.y = anchorY + off.y - window.innerHeight / 2;
+    state.scale = newScale;
+    applyState();
+  }
+
+  // 회전: 상단 회전 핸들. 중심 기준 각도 변화량을 더한다(스냅 없이 정밀).
+  overlayEls.rotHandle.addEventListener('mousedown', (e) => {
+    if (state.mode !== 'image' || !state.visible) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const C = center();
+    gesture = {
+      type: 'rotate',
+      cx: C.x,
+      cy: C.y,
+      startRotation: state.rotation || 0,
+      startAngle: Math.atan2(e.clientY - C.y, e.clientX - C.x),
+    };
+  });
+
+  function applyRotate(e) {
+    const { cx, cy, startRotation, startAngle } = gesture;
+    const a = Math.atan2(e.clientY - cy, e.clientX - cx);
+    const deltaDeg = ((a - startAngle) * 180) / Math.PI;
+    state.rotation = T.normalizeRotation(startRotation + deltaDeg);
+    applyState();
+  }
+
   window.addEventListener(
     'mousemove',
     (e) => {
-      if (!dragging) return;
-      // 드래그 도중 모드가 바뀌거나(Ctrl 떼기·blur 등) 이미지가 사라지면 즉시 종료.
-      // (이동 적용 전에 가드해 추가 이동 픽셀을 막는다)
+      if (!gesture) return;
+      // 1차 종료는 setMode/removeImage 가 담당. 여기는 혹시 모를 상태 불일치를 막는 안전망.
       if (state.mode !== 'image' || !state.visible) {
-        endDrag();
+        endGesture();
         return;
       }
-      state.x = dragOrigX + (e.clientX - dragStartX);
-      state.y = dragOrigY + (e.clientY - dragStartY);
-      applyState();
+      if (gesture.type === 'move') {
+        state.x = gesture.origX + (e.clientX - gesture.startX);
+        state.y = gesture.origY + (e.clientY - gesture.startY);
+        applyState();
+      } else if (gesture.type === 'resize') {
+        applyResize(e);
+      } else if (gesture.type === 'rotate') {
+        applyRotate(e);
+      }
     },
     true
   );
-  window.addEventListener('mouseup', endDrag, true);
+  window.addEventListener('mouseup', endGesture, true);
 
   // ---- 직접 상호작용: 휠 줌(커서 기준) / Shift+휠 회전 ----
   overlayEls.img.addEventListener(
@@ -173,8 +276,8 @@
       e.preventDefault(); // 페이지 스크롤 및 Ctrl+휠 페이지 줌 차단
 
       if (e.shiftKey) {
-        const delta = e.deltaY > 0 ? -5 : 5;
-        state.rotation = T.clampRotation(state.rotation + delta);
+        const delta = e.deltaY > 0 ? -1 : 1;
+        state.rotation = T.normalizeRotation(state.rotation + delta);
         applyState();
         return;
       }

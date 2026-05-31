@@ -11,6 +11,8 @@
   const SCALE_MAX = 5;
   const ROTATION_MIN = -180;
   const ROTATION_MAX = 180;
+  // 핸들로 너무 작게 줄여 잡을 수 없게 되는 것을 막는 최소 변(px).
+  const MIN_PX = 24;
 
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
@@ -24,24 +26,45 @@
     return clamp(rotation, ROTATION_MIN, ROTATION_MAX);
   }
 
+  // 회전 핸들용: 임의 각도를 (-180, 180] 범위로 래핑(자유 회전 후 슬라이더 범위 유지).
+  function normalizeRotation(rotation) {
+    let d = rotation % 360;
+    if (d > 180) d -= 360;
+    if (d <= -180) d += 360;
+    return d;
+  }
+
+  function degToRad(deg) {
+    return (deg * Math.PI) / 180;
+  }
+
+  // 벡터 (x, y)에 회전행렬 R(deg)를 적용. 화면 y는 아래 방향이라 양수 deg가 시계방향(CSS rotate와 일치).
+  // R(θ)·(x,y) = (x·cosθ − y·sinθ, x·sinθ + y·cosθ). 역회전은 deg에 음수를 넣는다.
+  function rotateVec(x, y, deg) {
+    const r = degToRad(deg);
+    const c = Math.cos(r);
+    const s = Math.sin(r);
+    return { x: x * c - y * s, y: x * s + y * c };
+  }
+
   // 숫자를 보기 좋게 자른다 (불필요한 소수점/부동소수 오차 방지).
   function round(value, digits) {
     const f = 10 ** digits;
     return Math.round(value * f) / f;
   }
 
-  // {x, y, scale, rotation} → "translate(-50%,-50%) translate(Xpx,Ypx) scale(S) rotate(Rdeg)"
-  // -50% 베이스로 이미지를 뷰포트 중앙(top/left: 50%) 기준에 두므로,
+  // {x, y, rotation} → "translate(-50%,-50%) translate(Xpx,Ypx) rotate(Rdeg)"
+  // scale 은 frame 의 width/height(px)로 적용하므로 transform 에는 넣지 않는다
+  // (그래야 frame 자식인 핸들이 함께 확대되지 않고 고정 크기를 유지한다).
+  // -50% 베이스로 frame 을 뷰포트 중앙(top/left: 50%) 기준에 두므로,
   // x=y=0 이면 정확히 화면 중앙에 위치한다.
   function toTransform(state) {
     const x = round(state.x || 0, 2);
     const y = round(state.y || 0, 2);
-    const scale = round(clampScale(state.scale ?? 1), 4);
-    const rotation = round(clampRotation(state.rotation || 0), 2);
+    const rotation = round(state.rotation || 0, 2);
     return (
       'translate(-50%, -50%) ' +
       `translate(${x}px, ${y}px) ` +
-      `scale(${scale}) ` +
       `rotate(${rotation}deg)`
     );
   }
@@ -51,9 +74,13 @@
     SCALE_MAX,
     ROTATION_MIN,
     ROTATION_MAX,
+    MIN_PX,
     clamp,
     clampScale,
     clampRotation,
+    normalizeRotation,
+    degToRad,
+    rotateVec,
     round,
     toTransform,
   };
