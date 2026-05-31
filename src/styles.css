@@ -1,0 +1,262 @@
+/* styles.css — 오버레이 + 패널 스타일.
+   모든 셀렉터에 imgovl- prefix, 핵심 규칙(위치/z-index/pointer-events/box-sizing/폰트/리셋)에
+   !important 를 적용해 host 페이지 CSS 충돌을 차단한다.
+   1차 격리 전략은 prefix + !important 이며, 충돌 발생 시 Shadow DOM 전환을 검토한다(PLAN 6). */
+
+/* ===== 오버레이 ===== */
+.imgovl-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  pointer-events: none !important; /* 컨테이너는 항상 클릭 통과 */
+  z-index: 2147483646 !important;
+  overflow: visible !important;
+}
+
+.imgovl-overlay-img {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform-origin: center center !important;
+  max-width: none !important;
+  max-height: none !important;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  display: none; /* 초기 숨김 (apply 가 토글) */
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+  will-change: transform, opacity;
+  pointer-events: none; /* 모드에 따라 inline 으로 토글 */
+}
+
+/* ===== 패널 ===== */
+.imgovl-panel {
+  position: fixed !important;
+  top: 16px !important;
+  right: 16px !important;
+  z-index: 2147483647 !important; /* 오버레이보다 위 → 항상 조작 가능 */
+  pointer-events: auto !important;
+  box-sizing: border-box !important;
+  width: 280px !important;
+  max-width: calc(100vw - 32px) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-radius: 12px !important;
+  background: #1f2330 !important;
+  color: #e8eaf0 !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Malgun Gothic",
+    "맑은 고딕", sans-serif !important;
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  text-align: left !important;
+  overflow: hidden !important;
+}
+
+.imgovl-panel *,
+.imgovl-panel *::before,
+.imgovl-panel *::after {
+  box-sizing: border-box !important;
+  font-family: inherit !important;
+}
+
+/* 헤더 */
+.imgovl-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 10px 12px !important;
+  background: #242a3a !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  cursor: default !important;
+}
+
+.imgovl-title {
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  color: #ffffff !important;
+  flex: 0 0 auto !important;
+}
+
+.imgovl-badge {
+  margin-left: auto !important;
+  padding: 2px 8px !important;
+  border-radius: 999px !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #b9c0d4 !important;
+  white-space: nowrap !important;
+}
+
+.imgovl-badge.imgovl-badge-image {
+  background: #6366f1 !important;
+  color: #ffffff !important;
+}
+
+.imgovl-collapse-btn {
+  flex: 0 0 auto !important;
+  width: 22px !important;
+  height: 22px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: #b9c0d4 !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  line-height: 1 !important;
+}
+.imgovl-collapse-btn:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* 본문 */
+.imgovl-body {
+  display: block !important;
+  padding: 12px !important;
+}
+.imgovl-panel.imgovl-collapsed .imgovl-body {
+  display: none !important;
+}
+
+/* 드롭존 */
+.imgovl-dropzone {
+  position: relative !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 64px !important;
+  padding: 12px !important;
+  margin-bottom: 12px !important;
+  border: 1.5px dashed rgba(255, 255, 255, 0.25) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  color: #aab2c8 !important;
+  text-align: center !important;
+  cursor: pointer !important;
+  transition: border-color 0.12s, background 0.12s !important;
+}
+.imgovl-dropzone:hover {
+  border-color: rgba(99, 102, 241, 0.6) !important;
+}
+.imgovl-dropzone.imgovl-dragover {
+  border-color: #6366f1 !important;
+  background: rgba(99, 102, 241, 0.12) !important;
+  color: #e8eaf0 !important;
+}
+.imgovl-dropzone-text {
+  font-size: 12px !important;
+  pointer-events: none !important;
+}
+.imgovl-file-input {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 컨트롤(슬라이더) 행 */
+.imgovl-control {
+  margin-bottom: 12px !important;
+}
+.imgovl-row-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  margin-bottom: 4px !important;
+}
+.imgovl-label {
+  font-size: 12px !important;
+  color: #c9cfe0 !important;
+}
+.imgovl-value {
+  font-size: 12px !important;
+  font-variant-numeric: tabular-nums !important;
+  color: #9aa3bd !important;
+}
+.imgovl-row-bottom {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+.imgovl-slider {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  margin: 0 !important;
+  accent-color: #6366f1 !important;
+  cursor: pointer !important;
+}
+
+/* 스텝/액션 버튼 공통 */
+.imgovl-step-btn,
+.imgovl-action-btn,
+.imgovl-collapse-btn {
+  font-family: inherit !important;
+}
+.imgovl-step-btn {
+  flex: 0 0 auto !important;
+  min-width: 32px !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #e8eaf0 !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  white-space: nowrap !important;
+}
+.imgovl-step-btn:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+/* 액션 */
+.imgovl-actions {
+  display: flex !important;
+  gap: 8px !important;
+  margin-bottom: 10px !important;
+}
+.imgovl-action-btn {
+  flex: 1 1 0 !important;
+  height: 32px !important;
+  padding: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #e8eaf0 !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+}
+.imgovl-action-btn:hover {
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+.imgovl-action-btn.imgovl-danger {
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  color: #fca5a5 !important;
+}
+.imgovl-action-btn.imgovl-danger:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
+}
+
+/* 이미지 없을 때 변형/액션 컨트롤 비활성 */
+.imgovl-body.imgovl-no-image .imgovl-control,
+.imgovl-body.imgovl-no-image .imgovl-actions {
+  opacity: 0.45 !important;
+  pointer-events: none !important;
+}
+
+/* 힌트 */
+.imgovl-hint {
+  font-size: 11px !important;
+  color: #7e87a3 !important;
+  line-height: 1.4 !important;
+}
