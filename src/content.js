@@ -92,6 +92,7 @@
   }
 
   function removeImage() {
+    endGesture(); // 이미지가 사라지는 시점에 잔존 제스처 즉시 정리
     if (state.src) URL.revokeObjectURL(state.src);
     state.src = null;
     state.visible = false;
@@ -112,6 +113,9 @@
   function setMode(mode) {
     if (state.mode === mode) return;
     state.mode = mode;
+    // image 모드를 벗어나면 잔존 제스처를 즉시 종료(다음 mousemove까지 미루지 않음).
+    // blur/visibilitychange 는 모두 setMode('web') 을 경유하므로 여기서 일괄 정리된다.
+    if (mode !== 'image') endGesture();
     applyState();
   }
 
@@ -244,7 +248,7 @@
     'mousemove',
     (e) => {
       if (!gesture) return;
-      // 제스처 도중 모드가 바뀌거나(Ctrl 떼기·blur 등) 이미지가 사라지면 즉시 종료.
+      // 1차 종료는 setMode/removeImage 가 담당. 여기는 혹시 모를 상태 불일치를 막는 안전망.
       if (state.mode !== 'image' || !state.visible) {
         endGesture();
         return;
