@@ -55,8 +55,8 @@
 .imgovl-rot-handle,
 .imgovl-rot-line {
   position: absolute !important;
-  display: none; /* image 모드 클래스에서만 표시 */
-  pointer-events: none;
+  display: none !important; /* image 모드 클래스에서만 표시 */
+  pointer-events: none !important;
   margin: 0 !important;
   padding: 0 !important;
   box-sizing: border-box !important;
@@ -64,11 +64,11 @@
 .imgovl-frame.imgovl-image-mode .imgovl-handle,
 .imgovl-frame.imgovl-image-mode .imgovl-rot-handle,
 .imgovl-frame.imgovl-image-mode .imgovl-rot-line {
-  display: block;
+  display: block !important;
 }
 .imgovl-frame.imgovl-image-mode .imgovl-handle,
 .imgovl-frame.imgovl-image-mode .imgovl-rot-handle {
-  pointer-events: auto;
+  pointer-events: auto !important;
 }
 
 .imgovl-handle {
