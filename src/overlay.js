@@ -84,7 +84,8 @@
 
     if (!shouldShow) {
       frame.style.display = 'none';
-      img.style.pointerEvents = 'none';
+      // host 페이지의 img { ... !important } 규칙을 이기도록 inline !important 로 고정.
+      img.style.setProperty('pointer-events', 'none', 'important');
       frame.classList.remove('imgovl-image-mode');
       return;
     }
@@ -99,8 +100,9 @@
     const imageMode = state.mode === 'image';
     frame.classList.toggle('imgovl-image-mode', imageMode);
     // image 모드에서만 이미지가 이벤트를 받아 드래그/휠 조작 가능(핸들 표시·활성은 CSS 클래스로).
-    img.style.pointerEvents = imageMode ? 'auto' : 'none';
-    img.style.cursor = imageMode ? 'grab' : 'default';
+    // host 페이지의 img { ... !important } 규칙을 이기도록 inline !important 로 고정.
+    img.style.setProperty('pointer-events', imageMode ? 'auto' : 'none', 'important');
+    img.style.setProperty('cursor', imageMode ? 'grab' : 'default', 'important');
   }
 
   NS.overlay = { create, apply };

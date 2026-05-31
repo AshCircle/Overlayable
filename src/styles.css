@@ -47,7 +47,7 @@
   user-select: none !important;
   -webkit-user-drag: none !important;
   will-change: opacity;
-  pointer-events: none; /* 모드에 따라 inline 으로 토글 */
+  pointer-events: none; /* 모드에 따라 JS 가 inline !important 로 토글(host CSS 충돌 방지) */
 }
 
 /* ===== 조작 핸들 (image 모드에서만 표시·활성) ===== */

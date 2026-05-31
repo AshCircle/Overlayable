@@ -162,7 +162,8 @@
     if (state.mode !== 'image' || !state.visible) return;
     e.preventDefault();
     gesture = { type: 'move', startX: e.clientX, startY: e.clientY, origX: state.x, origY: state.y };
-    overlayEls.img.style.cursor = 'grabbing';
+    // host 의 img { cursor: ... !important } 를 이기도록 inline !important 로 고정.
+    overlayEls.img.style.setProperty('cursor', 'grabbing', 'important');
   });
 
   // 리사이즈: 꼭짓점·모서리 8개 핸들. 반대편을 고정하고 비율을 유지한다.
