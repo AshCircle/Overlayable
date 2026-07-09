@@ -5,7 +5,11 @@
   'use strict';
 
   const NS = (window.__OVERLAYABLE__ = window.__OVERLAYABLE__ || {});
-  const { toTransform, clampScale, round } = NS.transform;
+  const { toTransform, round } = NS.transform;
+
+  // 렌더 가드: 지도 줌 동기화로 scale 이 극단으로 갈 때의 보호 장치.
+  const MAX_SIDE_PX = 2 ** 21; // Blink 레이아웃 좌표 한계(약 3.35e7)보다 훨씬 안쪽에서 숨김
+  const CULL_MARGIN_PX = 128; // 뷰포트 컬링 여유(경계에서 깜빡임 방지)
 
   // 8개 리사이즈 핸들 정의. id: 위치 클래스, sx/sy: 로컬 부호(원점=중심).
   //  - 꼭짓점: sx,sy ∈ {±1}
@@ -86,7 +90,23 @@
       img.removeAttribute('src');
     }
 
-    const shouldShow = !!photo.src && photo.naturalW > 0 && photo.naturalH > 0;
+    // 카메라(지도 줌) 유도 scale 은 슬라이더 범위를 벗어날 수 있으므로 클램프 없이 그대로 쓴다
+    // (수동 조작 경로는 content.js 가 기록 시점에 이미 클램프한다).
+    const s = Math.max(photo.scale ?? 1, 0);
+    const w = photo.naturalW * s;
+    const h = photo.naturalH * s;
+
+    // 표시 가드 — 기본 조건(src + 자연 크기 로드 완료)에 두 가지를 더한다:
+    //  - 크기 상한: 한 변이 MAX_SIDE_PX 를 넘으면 숨김(극단 줌인 시 레이아웃 좌표 한계 보호)
+    //  - 뷰포트 컬링: 회전을 보수적으로 반영(반대각선 기준)해 완전히 화면 밖이면 숨김
+    // 매 반영마다 재계산되므로 지도를 되돌리면 자동으로 다시 나타난다.
+    const halfDiag = Math.hypot(w, h) / 2;
+    const oversized = w > MAX_SIDE_PX || h > MAX_SIDE_PX;
+    const offscreen =
+      Math.abs(photo.x || 0) > window.innerWidth / 2 + halfDiag + CULL_MARGIN_PX ||
+      Math.abs(photo.y || 0) > window.innerHeight / 2 + halfDiag + CULL_MARGIN_PX;
+    const shouldShow =
+      !!photo.src && photo.naturalW > 0 && photo.naturalH > 0 && !oversized && !offscreen;
 
     if (!shouldShow) {
       frame.style.display = 'none';
@@ -96,10 +116,9 @@
       return;
     }
 
-    const s = clampScale(photo.scale ?? 1);
     frame.style.display = 'block';
-    frame.style.width = round(photo.naturalW * s, 2) + 'px';
-    frame.style.height = round(photo.naturalH * s, 2) + 'px';
+    frame.style.width = round(w, 2) + 'px';
+    frame.style.height = round(h, 2) + 'px';
     frame.style.transform = toTransform(photo);
     img.style.opacity = String(photo.opacity);
 

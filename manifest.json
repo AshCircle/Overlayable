@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Overlayable",
-  "version": "0.1.0",
-  "description": "웹 페이지 위에 이미지를 오버레이로 띄우고 투명도/확대축소/회전을 조절하며, Ctrl 홀드로 웹 조작 모드와 이미지 조작 모드를 전환합니다.",
+  "version": "0.2.1",
+  "description": "geojson.io 지도 위에 이미지를 오버레이로 띄우고, 지도 이동/확대/회전에 맞춰 함께 움직입니다. 투명도/확대축소/회전 조절과 웹·이미지 조작 모드 전환을 지원합니다.",
+  "minimum_chrome_version": "111",
   "action": {
     "default_title": "Overlayable — 클릭하여 패널 토글"
   },
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["activeTab"],
+  "permissions": ["activeTab", "storage", "unlimitedStorage"],
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
@@ -17,15 +18,23 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
+      "matches": ["https://geojson.io/*"],
       "js": [
         "src/transform.js",
+        "src/geo.js",
         "src/overlay.js",
         "src/panel.js",
+        "src/storage.js",
         "src/content.js"
       ],
       "css": ["src/styles.css"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://geojson.io/*"],
+      "js": ["src/bridge.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ]
 }
