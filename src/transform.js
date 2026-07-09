@@ -9,6 +9,10 @@
   // 변형값 제한 범위 (패널 슬라이더 범위와 일치시킨다).
   const SCALE_MIN = 0.1;
   const SCALE_MAX = 5;
+  // 지도 줌 동기화로 scale 이 슬라이더 범위를 크게 벗어날 수 있으므로,
+  // 상대 조작(휠/리사이즈/±스텝)은 슬라이더 범위로 스냅시키지 않고 하드 한계로만 제한한다.
+  const SCALE_HARD_MIN = 1e-4;
+  const SCALE_HARD_MAX = 1e4;
   const ROTATION_MIN = -180;
   const ROTATION_MAX = 180;
   // 핸들로 너무 작게 줄여 잡을 수 없게 되는 것을 막는 최소 변(px).
@@ -20,6 +24,10 @@
 
   function clampScale(scale) {
     return clamp(scale, SCALE_MIN, SCALE_MAX);
+  }
+
+  function clampScaleHard(scale) {
+    return clamp(scale, SCALE_HARD_MIN, SCALE_HARD_MAX);
   }
 
   function clampRotation(rotation) {
@@ -72,11 +80,14 @@
   NS.transform = {
     SCALE_MIN,
     SCALE_MAX,
+    SCALE_HARD_MIN,
+    SCALE_HARD_MAX,
     ROTATION_MIN,
     ROTATION_MAX,
     MIN_PX,
     clamp,
     clampScale,
+    clampScaleHard,
     clampRotation,
     normalizeRotation,
     degToRad,

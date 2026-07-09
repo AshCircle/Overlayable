@@ -1,7 +1,10 @@
 // content.js — 진입점. 상태 단일 소스를 두고, 오버레이/패널을 주입하며,
 // 키·모드 상태와 직접 상호작용(드래그/휠), 툴바 토글 메시지를 처리한다.
 // 다중 사진: state.photos[] + selectedId 로 관리하고, 사진별 프레임을 frames Map 으로 reconcile.
-// 로드 순서: transform.js, overlay.js, panel.js 다음 (가장 마지막).
+// geojson.io 지도 동기화: MAIN world 의 bridge.js 가 postMessage 로 보내는 카메라 상태를 받아
+// 지오-앵커(photo.geo)를 가진 사진의 x/y/scale/rotation 을 매 프레임 다시 유도한다.
+// 수동 조작 직후에는 reanchorPhoto 로 새 위치/크기를 지도에 재고정한다.
+// 로드 순서: transform.js, geo.js, overlay.js, panel.js 다음 (가장 마지막).
 (function () {
   'use strict';
 
@@ -17,12 +20,16 @@
   const MODE_KEY = IS_MAC ? 'Meta' : 'Control';
 
   // ---- 상태 (단일 소스) ----
-  // photo: { id, name, src, x, y, scale, rotation, opacity, naturalW, naturalH }
+  // photo: { id, name, src, x, y, scale, rotation, opacity, naturalW, naturalH, geo }
+  // geo: null | { lng, lat, zoom, bearing, scale, rotation }
+  //   — 사진 중심의 지리 앵커 + 앵커 시점의 카메라(zoom/bearing)와 변형(scale/rotation).
+  //     카메라가 움직이면 이 앵커에서 x/y/scale/rotation 을 다시 유도한다(syncFromCamera).
   const state = {
     active: false, // 툴바 토글로 켜진 UI 표시 여부
     mode: 'web', // 'web' | 'image' (전역)
     photos: [], // 사진 배열 (배열 순서 = z-order, 뒤가 위)
     selectedId: null, // 현재 선택된 사진 id
+    mapLinked: false, // geojson.io 지도 연동 여부(브리지 카메라 첫 수신 시 true)
   };
   let nextId = 1;
 
@@ -52,9 +59,11 @@
     },
     onDelete: (id) => removePhoto(id),
     onOpacity: (pct) => withSelected((p) => (p.opacity = T.clamp(pct / 100, 0, 1))),
+    // 슬라이더는 절대값 입력이므로 슬라이더 범위로 클램프. ±스텝은 상대 조작이라
+    // 지도 줌으로 범위를 벗어난 scale 을 5 로 스냅시키지 않도록 하드 한계만 적용.
     onScale: (pct) => withSelected((p) => (p.scale = T.clampScale(pct / 100))),
     onScaleStep: (delta) =>
-      withSelected((p) => (p.scale = T.clampScale(T.round(p.scale + delta, 4)))),
+      withSelected((p) => (p.scale = T.clampScaleHard(T.round(p.scale + delta, 4)))),
     onRotation: (deg) => withSelected((p) => (p.rotation = T.clampRotation(deg))),
     onRotateStep: (delta) => withSelected((p) => (p.rotation = T.clampRotation(p.rotation + delta))),
     onReset: () =>
@@ -70,24 +79,31 @@
 
   document.documentElement.appendChild(root);
 
-  // 선택된 사진이 있을 때만 변형을 적용하고 반영.
+  // 선택된 사진이 있을 때만 변형을 적용하고 반영. 수동 변경이므로 새 값으로 지도에 재고정.
   function withSelected(fn) {
     const p = getSelected();
     if (!p) return;
     fn(p);
+    reanchorPhoto(p);
     applyState();
   }
 
   // ---- 상태 → DOM 반영 (단일 지점) ----
+  // reconcile(멤버십/순서)과 프레임 반영을 분리한다: 카메라 구동 경로(syncFromCamera)는
+  // 사진 추가/삭제/순서를 바꾸지 않으므로 applyFrames 만 호출하는 것이 정확하고 싸다.
   function applyState() {
-    root.style.display = state.active ? 'block' : 'none';
     reconcileFrames();
+    applyFrames();
+    panelApi.sync(state);
+  }
+
+  function applyFrames() {
+    root.style.display = state.active ? 'block' : 'none';
     const imageMode = state.mode === 'image';
     for (const p of state.photos) {
       const els = frames.get(p.id);
       if (els) NS.overlay.applyFrame(els, p, { imageMode, selected: p.id === state.selectedId });
     }
-    panelApi.sync(state);
   }
 
   // photos 배열에 맞춰 프레임을 생성/제거하고 z-order(배열 순서)대로 정렬한다.
@@ -99,7 +115,9 @@
         frames.delete(id);
       }
     }
-    // 생성 + 순서 정렬: photos 순서대로 컨테이너에 append(이미 있으면 재배치).
+    // 생성 + 순서 정렬: photos 순서대로 배치하되, 이미 제자리면 DOM 을 건드리지 않는다
+    // (appendChild 는 같은 위치여도 제거+삽입으로 처리되어 불필요한 churn 을 만든다).
+    let cursor = null; // 직전에 자리를 확정한 frame
     for (const p of state.photos) {
       let els = frames.get(p.id);
       if (!els) {
@@ -107,7 +125,9 @@
         frames.set(p.id, els);
         bindFrameEvents(p.id, els);
       }
-      container.appendChild(els.frame); // append = 맨 뒤로 이동(배열 순서 유지)
+      const want = cursor ? cursor.nextSibling : container.firstChild;
+      if (els.frame !== want) container.insertBefore(els.frame, want);
+      cursor = els.frame;
     }
   }
 
@@ -131,10 +151,12 @@
       opacity: 1,
       naturalW: 0, // load 이벤트 전까지는 숨김(naturalW>0 조건)
       naturalH: 0,
+      geo: null, // 지리 앵커 — 카메라가 있으면 아래에서 즉시 고정
     };
     state.photos.push(photo);
     state.selectedId = photo.id; // 업로드한 사진을 자동 선택
     if (!state.active) state.active = true; // 업로드 시 자동으로 UI 표시
+    reanchorPhoto(photo); // 화면 중앙(x=y=0)에 해당하는 지리 좌표에 고정
     applyState();
   }
 
@@ -191,7 +213,8 @@
         e.stopPropagation();
         state.selectedId = id;
         const theta = p.rotation || 0;
-        const s0 = T.clampScale(p.scale ?? 1);
+        // 렌더와 동일하게 raw scale 사용(지도 줌으로 슬라이더 범위를 벗어났어도 앵커가 안 튀도록).
+        const s0 = Math.max(p.scale ?? 1, 0);
         const hw0 = (p.naturalW * s0) / 2;
         const hh0 = (p.naturalH * s0) / 2;
         const C0 = center(p);
@@ -238,13 +261,15 @@
 
         if (e.shiftKey) {
           p.rotation = T.normalizeRotation(p.rotation + (e.deltaY > 0 ? -1 : 1));
+          reanchorPhoto(p);
           applyState();
           return;
         }
 
         const oldScale = p.scale;
         const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        const newScale = T.clampScale(oldScale * factor);
+        // 상대 조작이므로 하드 한계만 적용(지도 줌으로 5 를 넘은 scale 이 스냅되지 않도록).
+        const newScale = T.clampScaleHard(oldScale * factor);
         if (newScale === oldScale) {
           applyState(); // 선택 변경만이라도 반영
           return;
@@ -257,6 +282,7 @@
         p.x = e.clientX - ratio * (e.clientX - cx) - window.innerWidth / 2;
         p.y = e.clientY - ratio * (e.clientY - cy) - window.innerHeight / 2;
         p.scale = newScale;
+        reanchorPhoto(p);
         applyState();
       },
       { capture: true, passive: false }
@@ -307,7 +333,11 @@
   // 제스처 종료: mouseup 과 mousemove 가드에서 공유.
   function endGesture() {
     if (!gesture) return;
+    const p = getPhoto(gesture.photoId);
     gesture = null;
+    // 제스처 동안 카메라 동기화에서 제외됐던 사진을 최종 위치로 재고정
+    // (마지막 mousemove 이후 지도 관성 글라이드까지 흡수한다).
+    reanchorPhoto(p);
     applyState(); // 커서 복귀 등
   }
 
@@ -329,9 +359,9 @@
       // 상/하 모서리: 세로 기준.
       newScale = (sy * v.y) / nH;
     }
-    // 클램프 + 최소 픽셀 보장.
+    // 클램프(상대 조작 → 하드 한계) + 최소 픽셀 보장.
     const minScale = T.MIN_PX / Math.min(nW, nH);
-    newScale = T.clampScale(Math.max(newScale, minScale));
+    newScale = T.clampScaleHard(Math.max(newScale, minScale));
 
     const hw = (nW * newScale) / 2;
     const hh = (nH * newScale) / 2;
@@ -340,6 +370,7 @@
     p.x = anchorX + off.x - window.innerWidth / 2;
     p.y = anchorY + off.y - window.innerHeight / 2;
     p.scale = newScale;
+    reanchorPhoto(p);
     applyState();
   }
 
@@ -348,6 +379,7 @@
     const a = Math.atan2(e.clientY - cy, e.clientX - cx);
     const deltaDeg = ((a - startAngle) * 180) / Math.PI;
     p.rotation = T.normalizeRotation(startRotation + deltaDeg);
+    reanchorPhoto(p);
     applyState();
   }
 
@@ -364,6 +396,7 @@
       if (gesture.type === 'move') {
         p.x = gesture.origX + (e.clientX - gesture.startX);
         p.y = gesture.origY + (e.clientY - gesture.startY);
+        reanchorPhoto(p);
         applyState();
       } else if (gesture.type === 'resize') {
         applyResize(e, p);
@@ -386,6 +419,89 @@
     },
     true
   );
+
+  // ---- geojson.io 지도 동기화 ----
+  // camera: { lng, lat, zoom, bearing, cx, cy } — bridge.js 가 매 지도 프레임 postMessage 로 중계.
+  // cx/cy 는 지리적 중심의 화면 px(패딩 반영). 지도를 못 찾으면 camera 는 null 로 남고
+  // 사진은 기존처럼 화면 고정으로 동작한다.
+  let camera = null;
+  let cameraRafId = null;
+  let panelSyncTimer = null;
+
+  // 수동 조작 직후 호출: 사진 중심의 화면 좌표를 지리 좌표로 역투영해 현재 카메라에 재고정.
+  // project(unproject(pt)) 왕복이 정확히 일치하므로 재고정으로 화면 위치가 튀지 않는다.
+  function reanchorPhoto(p) {
+    if (!camera || !p) return;
+    const ll = NS.geo.unproject(center(p), camera);
+    p.geo = {
+      lng: ll.lng,
+      lat: ll.lat,
+      zoom: camera.zoom,
+      bearing: camera.bearing,
+      scale: p.scale,
+      rotation: p.rotation,
+    };
+  }
+
+  // 카메라 → 사진 유도. 앵커에서 매번 다시 계산하고 unproject 를 쓰지 않으므로
+  // 반복 왕복으로 인한 누적 드리프트가 없다.
+  function syncFromCamera() {
+    if (!camera) return;
+    for (const p of state.photos) {
+      // 제스처 중인 사진은 커서 추종이 우선(지도 관성 글라이드 중 드래그 대비). endGesture 가 재고정.
+      if (gesture && gesture.photoId === p.id) continue;
+      if (!p.geo) {
+        reanchorPhoto(p); // 첫 카메라 수신: 현재 화면 위치 그대로 앵커(점프 없음)
+        continue;
+      }
+      const pt = NS.geo.project(p.geo, camera);
+      p.x = pt.x - window.innerWidth / 2;
+      p.y = pt.y - window.innerHeight / 2;
+      p.scale = p.geo.scale * Math.pow(2, camera.zoom - p.geo.zoom);
+      p.rotation = T.normalizeRotation(p.geo.rotation - (camera.bearing - p.geo.bearing));
+    }
+    applyFrames(); // 멤버십/순서 불변 → reconcile 생략
+    schedulePanelSync();
+  }
+
+  // 카메라 메시지는 지도 애니메이션 동안 매 프레임 오므로 rAF 로 병합해 프레임당 1회만 반영.
+  function scheduleCameraSync() {
+    if (cameraRafId != null) return;
+    cameraRafId = requestAnimationFrame(() => {
+      cameraRafId = null;
+      syncFromCamera();
+    });
+  }
+
+  // 패널 sync 는 목록/슬라이더 DOM 갱신 비용이 있어 카메라 경로에서는 최대 10Hz(trailing)로 제한.
+  function schedulePanelSync() {
+    if (panelSyncTimer != null) return;
+    panelSyncTimer = setTimeout(() => {
+      panelSyncTimer = null;
+      panelApi.sync(state);
+    }, 100);
+  }
+
+  window.addEventListener('message', (e) => {
+    // 같은 창의 bridge.js 가 보낸 메시지만 수용하고 페이로드 숫자를 검증한다.
+    if (e.source !== window || e.origin !== location.origin) return;
+    const d = e.data;
+    if (!d || d.source !== 'overlayable-bridge' || d.type !== 'camera') return;
+    if (![d.lng, d.lat, d.zoom, d.bearing, d.cx, d.cy].every(Number.isFinite)) return;
+    camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy };
+    if (!state.mapLinked) {
+      state.mapLinked = true;
+      schedulePanelSync(); // 패널의 연동 상태 표시 갱신
+    }
+    scheduleCameraSync();
+  });
+
+  // 마운트 시 브리지에 카메라 재전송을 요청한다(지도가 idle 이어도 즉시 연동되도록.
+  // 확장 리로드 시 MAIN world 브리지는 남아 있으므로 이 핑으로 재연결된다).
+  window.postMessage({ source: 'overlayable-content', type: 'ping' }, location.origin);
+
+  // 창 크기가 바뀌면 x/y(뷰포트 중심 기준)를 새 중심 기준으로 다시 유도한다.
+  window.addEventListener('resize', scheduleCameraSync);
 
   // ---- 툴바 토글 메시지 수신 ----
   if (chrome.runtime && chrome.runtime.onMessage) {

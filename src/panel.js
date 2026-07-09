@@ -126,6 +126,13 @@
     removeBtn.addEventListener('click', () => handlers.onRemove());
     const actions = el('div', { class: 'imgovl-actions' }, [resetBtn, removeBtn]);
 
+    // ---- 지도 연동 상태 ----
+    // content.js 가 브리지 카메라를 수신하면 state.mapLinked 가 true 가 되어 sync 에서 갱신된다.
+    const mapStatus = el('div', {
+      class: 'imgovl-map-status',
+      text: '지도 감지 대기 중 · 사진은 화면에 고정됩니다',
+    });
+
     // ---- 힌트 ----
     // 조작 키 레이블: macOS 는 Command(⌘), 그 외는 Ctrl.
     const modeKeyLabel = /Mac|iPhone|iPad|iPod/.test(
@@ -135,7 +142,7 @@
       : 'Ctrl';
     const hint = el('div', {
       class: 'imgovl-hint',
-      text: `여러 장 업로드 가능. 목록에서 사진 선택/삭제. ${modeKeyLabel} 홀드 = 이미지 조작: 본체 드래그=이동(커서 아래 사진 선택), 꼭짓점·모서리=크기조절, 상단 핸들=회전, 휠=줌 / 놓으면 웹 조작`,
+      text: `지도를 움직이면 사진이 함께 이동/줌/회전. ${modeKeyLabel} 홀드 = 이미지 조작: 본체 드래그=이동(커서 아래 사진 선택), 꼭짓점·모서리=크기조절, 상단 핸들=회전, 휠=줌 — 조작한 사진은 새 위치에 다시 고정 / 놓으면 웹(지도) 조작`,
     });
 
     // ---- 본문 ----
@@ -146,6 +153,7 @@
       scaleRow,
       rotationRow,
       actions,
+      mapStatus,
       hint,
     ]);
 
@@ -262,6 +270,13 @@
       const isImageMode = state.mode === 'image';
       badge.textContent = isImageMode ? '이미지 모드' : '웹 모드';
       badge.classList.toggle('imgovl-badge-image', isImageMode);
+
+      // 지도 연동 상태 표시.
+      const linked = !!state.mapLinked;
+      mapStatus.textContent = linked
+        ? '지도 연동됨 · 사진이 지도에 고정됩니다'
+        : '지도 감지 대기 중 · 사진은 화면에 고정됩니다';
+      mapStatus.classList.toggle('imgovl-linked', linked);
 
       // 선택된 사진이 없으면 변형/액션 컨트롤 비활성 표시.
       body.classList.toggle('imgovl-no-selection', !selected);
