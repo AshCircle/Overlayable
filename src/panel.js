@@ -126,6 +126,32 @@
     removeBtn.addEventListener('click', () => handlers.onRemove());
     const actions = el('div', { class: 'imgovl-actions' }, [resetBtn, removeBtn]);
 
+    // ---- 저장 관리: 내보내기 / 가져오기 ----
+    // 내보내기: 현재 저장 상태를 JSON 파일로. 가져오기: 파일을 골라 기존 오버레이에 병합.
+    const exportBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '내보내기' });
+    const importBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '가져오기' });
+    const importInput = el('input', {
+      class: 'imgovl-file-input',
+      type: 'file',
+      accept: 'application/json,.json',
+    });
+    exportBtn.addEventListener('click', () => handlers.onExport());
+    importBtn.addEventListener('click', () => importInput.click());
+    importInput.addEventListener('change', () => {
+      const file = importInput.files && importInput.files[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = () => handlers.onImport(String(reader.result || ''));
+        reader.readAsText(file);
+      }
+      importInput.value = ''; // 같은 파일 재선택 허용
+    });
+    const storeActions = el('div', { class: 'imgovl-actions imgovl-store-actions' }, [
+      exportBtn,
+      importBtn,
+      importInput,
+    ]);
+
     // ---- 지도 연동 상태 ----
     // content.js 가 브리지 카메라를 수신하면 state.mapLinked 가 true 가 되어 sync 에서 갱신된다.
     const mapStatus = el('div', {
@@ -153,6 +179,7 @@
       scaleRow,
       rotationRow,
       actions,
+      storeActions,
       mapStatus,
       hint,
     ]);

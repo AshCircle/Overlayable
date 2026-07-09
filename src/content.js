@@ -30,8 +30,8 @@
     photos: [], // 사진 배열 (배열 순서 = z-order, 뒤가 위)
     selectedId: null, // 현재 선택된 사진 id
     mapLinked: false, // geojson.io 지도 연동 여부(브리지 카메라 첫 수신 시 true)
+    nextId: 1, // 다음 사진 id (영속화되어 세션 간 id 충돌을 막는다)
   };
-  let nextId = 1;
 
   // ---- 사진 헬퍼 ----
   function getPhoto(id) {
@@ -74,6 +74,8 @@
     onRemove: () => {
       if (state.selectedId != null) removePhoto(state.selectedId);
     },
+    onExport: () => exportState(),
+    onImport: (text) => importState(text),
   });
   root.appendChild(panelApi.panel);
 
@@ -88,6 +90,20 @@
     applyState();
   }
 
+  // ---- 영속화 (chrome.storage.local) ----
+  // 저장은 applyState 단일 지점에서만 예약한다. 카메라 이동 경로는 applyFrames 만 부르므로
+  // 지도 드래그로는 저장이 일어나지 않는다(geo 앵커가 불변이라 저장할 것도 없다).
+  let saveTimer = null;
+  let restoring = false; // 복원 중에는 저장 억제(복원값이 곧바로 되-저장되는 낭비 방지)
+  function scheduleSave() {
+    if (restoring) return;
+    if (saveTimer != null) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      NS.storage.save(state);
+    }, 400);
+  }
+
   // ---- 상태 → DOM 반영 (단일 지점) ----
   // reconcile(멤버십/순서)과 프레임 반영을 분리한다: 카메라 구동 경로(syncFromCamera)는
   // 사진 추가/삭제/순서를 바꾸지 않으므로 applyFrames 만 호출하는 것이 정확하고 싸다.
@@ -95,6 +111,7 @@
     reconcileFrames();
     applyFrames();
     panelApi.sync(state);
+    scheduleSave();
   }
 
   function applyFrames() {
@@ -138,12 +155,15 @@
     p.rotation = 0;
   }
 
-  // ---- 사진 추가/제거 (objectURL 수명 관리) ----
+  // ---- 사진 추가/제거 ----
+  // 영속화·공유를 위해 objectURL 대신 base64 data URL 을 src 의 단일 표현으로 쓴다.
+  // FileReader 로 바이트를 읽는 동안 src 는 빈 문자열이고, 완료되면 채워져 표시된다.
   function addPhoto(file) {
     const photo = {
-      id: nextId++,
+      id: state.nextId++,
+      uid: crypto.randomUUID(), // import 병합 시 중복 식별용 안정 id
       name: file.name || '이미지',
-      src: URL.createObjectURL(file),
+      src: '', // FileReader 완료 시 base64 data URL 로 채움
       x: 0,
       y: 0,
       scale: 1,
@@ -157,14 +177,25 @@
     state.selectedId = photo.id; // 업로드한 사진을 자동 선택
     if (!state.active) state.active = true; // 업로드 시 자동으로 UI 표시
     reanchorPhoto(photo); // 화면 중앙(x=y=0)에 해당하는 지리 좌표에 고정
-    applyState();
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!getPhoto(photo.id)) return; // 읽는 도중 삭제된 경우
+      photo.src = String(reader.result || '');
+      applyState(); // src 채워짐 → 프레임 표시 + 저장 예약
+    };
+    reader.onerror = () => console.warn('[Overlayable] 이미지 읽기 실패:', file && file.name);
+    reader.readAsDataURL(file);
+
+    applyState(); // 목록/선택은 즉시 반영(이미지는 src 채워지면 표시)
   }
 
   function removePhoto(id) {
     const p = getPhoto(id);
     if (!p) return;
     if (gesture && gesture.photoId === id) endGesture(); // 조작 중인 사진이면 제스처 정리
-    if (p.src) URL.revokeObjectURL(p.src);
+    // 과거 세션의 blob: URL 잔재만 revoke(현재는 data URL 이라 revoke 불필요).
+    if (typeof p.src === 'string' && p.src.startsWith('blob:')) URL.revokeObjectURL(p.src);
     state.photos = state.photos.filter((q) => q.id !== id);
     if (state.selectedId === id) {
       // 마지막(최상단) 사진을 새 선택으로, 없으면 해제.
@@ -522,6 +553,105 @@
   const observer = new MutationObserver(() => ensureMounted());
   observer.observe(document.documentElement, { childList: true });
 
-  // 초기 반영 (active=false → 숨김 상태)
+  // ---- 파일 export / import ----
+  function timestamp() {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  }
+
+  // 현재 저장 상태를 JSON 파일로 내려받는다.
+  function exportState() {
+    const blob = NS.storage.toExportBlob(state);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `overlayable-${timestamp()}.json`;
+    (document.body || document.documentElement).appendChild(a); // 클릭 위해 DOM 연결
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // 파일 텍스트를 파싱해 기존 오버레이에 병합(additive)한다. uid 가 같으면 중복으로 보고 건너뛴다.
+  function importState(text) {
+    let records;
+    try {
+      records = NS.storage.parseImport(text);
+    } catch (err) {
+      alert(`가져오기 실패: ${err.message}`);
+      return;
+    }
+    const existingUids = new Set(state.photos.map((p) => p.uid).filter(Boolean));
+    let lastId = null;
+    let added = 0;
+    for (const rec of records) {
+      if (rec.uid && existingUids.has(rec.uid)) continue; // 같은 파일 재-import 중복 방지
+      const photo = {
+        id: state.nextId++,
+        uid: rec.uid || crypto.randomUUID(),
+        name: rec.name,
+        src: rec.src,
+        x: rec.x,
+        y: rec.y,
+        scale: rec.scale,
+        rotation: rec.rotation,
+        opacity: rec.opacity,
+        naturalW: rec.naturalW,
+        naturalH: rec.naturalH,
+        geo: rec.geo, // 위경도 앵커 — 다음 카메라 동기화가 화면 위치를 재계산
+      };
+      state.photos.push(photo);
+      existingUids.add(photo.uid);
+      lastId = photo.id;
+      added++;
+    }
+    if (added === 0) {
+      alert('이미 가져온 항목이라 추가된 이미지가 없습니다.');
+      return;
+    }
+    state.active = true;
+    if (lastId != null) state.selectedId = lastId;
+    applyState();
+    if (camera) scheduleCameraSync(); // geo 앵커를 현재 지도 위치로 즉시 투영
+  }
+
+  // ---- 자동 복원 ----
+  async function restore() {
+    const saved = await NS.storage.load();
+    if (!saved || !Array.isArray(saved.photos) || saved.photos.length === 0) return;
+    restoring = true;
+    try {
+      state.photos = saved.photos.map((p) => ({
+        id: p.id,
+        uid: p.uid || crypto.randomUUID(),
+        name: p.name || '이미지',
+        src: p.src,
+        x: Number.isFinite(p.x) ? p.x : 0,
+        y: Number.isFinite(p.y) ? p.y : 0,
+        scale: Number.isFinite(p.scale) ? p.scale : 1,
+        rotation: Number.isFinite(p.rotation) ? p.rotation : 0,
+        opacity: Number.isFinite(p.opacity) ? p.opacity : 1,
+        naturalW: Number.isFinite(p.naturalW) ? p.naturalW : 0,
+        naturalH: Number.isFinite(p.naturalH) ? p.naturalH : 0,
+        geo: p.geo || null,
+      }));
+      // id 충돌 방지: 저장된 nextId 와 현재 사진 최대 id+1 중 큰 값.
+      const maxId = state.photos.reduce((m, p) => Math.max(m, p.id || 0), 0);
+      state.nextId = Math.max(saved.nextId || 1, maxId + 1);
+      state.selectedId =
+        saved.selectedId != null && getPhoto(saved.selectedId)
+          ? saved.selectedId
+          : state.photos[state.photos.length - 1].id;
+      state.active = true; // 복원된 오버레이는 바로 보이도록
+    } finally {
+      restoring = false;
+    }
+    applyState();
+    if (camera) scheduleCameraSync(); // 이미 카메라를 받았다면 즉시 지도 위치로 투영
+  }
+
+  // 초기 반영 (active=false → 숨김 상태) 후, 저장된 상태를 비동기 복원.
   applyState();
+  restore();
 })();

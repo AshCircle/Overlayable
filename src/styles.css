@@ -329,11 +329,17 @@
   background: rgba(239, 68, 68, 0.16) !important;
 }
 
-/* 선택된 사진 없을 때 변형/액션 컨트롤 비활성 */
+/* 선택된 사진 없을 때 변형/액션 컨트롤 비활성.
+   저장 관리(내보내기/가져오기)는 선택과 무관하게 항상 활성이어야 하므로 제외한다. */
 .imgovl-body.imgovl-no-selection .imgovl-control,
-.imgovl-body.imgovl-no-selection .imgovl-actions {
+.imgovl-body.imgovl-no-selection .imgovl-actions:not(.imgovl-store-actions) {
   opacity: 0.45 !important;
   pointer-events: none !important;
+}
+
+/* 저장 관리 액션 행: 기본 actions 레이아웃을 쓰되 상단 여백만 조정. */
+.imgovl-store-actions {
+  margin-top: -2px !important;
 }
 
 /* ===== 사진 목록 ===== */
