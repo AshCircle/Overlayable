@@ -29,8 +29,8 @@
   pointer-events: none !important; /* 박스 자체는 통과, 자식(img/핸들)만 활성 */
   will-change: transform, width, height;
 }
-.imgovl-frame.imgovl-image-mode {
-  outline: 1px solid rgba(99, 102, 241, 0.9) !important; /* 선택 박스 표시 */
+.imgovl-frame.imgovl-selected {
+  outline: 1px solid rgba(99, 102, 241, 0.9) !important; /* 선택된 사진 박스 표시 */
 }
 
 .imgovl-overlay-img {
@@ -61,13 +61,13 @@
   padding: 0 !important;
   box-sizing: border-box !important;
 }
-.imgovl-frame.imgovl-image-mode .imgovl-handle,
-.imgovl-frame.imgovl-image-mode .imgovl-rot-handle,
-.imgovl-frame.imgovl-image-mode .imgovl-rot-line {
+.imgovl-frame.imgovl-selected .imgovl-handle,
+.imgovl-frame.imgovl-selected .imgovl-rot-handle,
+.imgovl-frame.imgovl-selected .imgovl-rot-line {
   display: block !important;
 }
-.imgovl-frame.imgovl-image-mode .imgovl-handle,
-.imgovl-frame.imgovl-image-mode .imgovl-rot-handle {
+.imgovl-frame.imgovl-selected .imgovl-handle,
+.imgovl-frame.imgovl-selected .imgovl-rot-handle {
   pointer-events: auto !important;
 }
 
@@ -112,7 +112,7 @@
   transform: translate(-50%, -50%) !important;
   cursor: grab !important;
 }
-.imgovl-frame.imgovl-image-mode .imgovl-rot-handle:active {
+.imgovl-frame.imgovl-selected .imgovl-rot-handle:active {
   cursor: grabbing !important;
 }
 
@@ -329,11 +329,76 @@
   background: rgba(239, 68, 68, 0.16) !important;
 }
 
-/* 이미지 없을 때 변형/액션 컨트롤 비활성 */
-.imgovl-body.imgovl-no-image .imgovl-control,
-.imgovl-body.imgovl-no-image .imgovl-actions {
+/* 선택된 사진 없을 때 변형/액션 컨트롤 비활성 */
+.imgovl-body.imgovl-no-selection .imgovl-control,
+.imgovl-body.imgovl-no-selection .imgovl-actions {
   opacity: 0.45 !important;
   pointer-events: none !important;
+}
+
+/* ===== 사진 목록 ===== */
+.imgovl-photo-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 6px !important;
+  max-height: 168px !important;
+  overflow-y: auto !important;
+  margin-bottom: 12px !important;
+}
+.imgovl-photo-list.imgovl-empty {
+  display: none !important;
+}
+.imgovl-photo-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 6px !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.03) !important;
+  cursor: pointer !important;
+  transition: border-color 0.12s, background 0.12s !important;
+}
+.imgovl-photo-item:hover {
+  border-color: rgba(99, 102, 241, 0.5) !important;
+}
+.imgovl-photo-item.imgovl-selected {
+  border-color: #6366f1 !important;
+  background: rgba(99, 102, 241, 0.14) !important;
+}
+.imgovl-thumb {
+  flex: 0 0 auto !important;
+  width: 40px !important;
+  height: 40px !important;
+  object-fit: cover !important;
+  border-radius: 4px !important;
+  background: rgba(0, 0, 0, 0.3) !important;
+  display: block !important;
+  pointer-events: none !important;
+}
+.imgovl-photo-label {
+  flex: 1 1 auto !important;
+  font-size: 12px !important;
+  color: #c9cfe0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.imgovl-photo-del {
+  flex: 0 0 auto !important;
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  border: 1px solid rgba(239, 68, 68, 0.4) !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: #fca5a5 !important;
+  font-size: 15px !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+}
+.imgovl-photo-del:hover {
+  background: rgba(239, 68, 68, 0.16) !important;
 }
 
 /* 힌트 */

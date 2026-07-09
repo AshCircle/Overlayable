@@ -1,5 +1,6 @@
 // panel.js — 플로팅 컨트롤 패널 UI를 생성하고 이벤트를 바인딩한다.
 // 패널은 항상 pointer-events:auto 이며, 컨트롤 조작 → handlers 콜백 → content.js 가 state 갱신.
+// 다중 사진: 사진 목록(썸네일/선택/삭제)을 렌더하고, 슬라이더는 선택된 사진을 대상으로 동작한다.
 // 역방향 동기화는 sync(state) 가 컨트롤의 .value 를 직접 설정(input 이벤트 미발생)해 루프를 막는다.
 // 로드 순서: overlay.js 다음, content.js 이전.
 (function () {
@@ -23,7 +24,8 @@
     return node;
   }
 
-  // handlers: { onUpload, onOpacity, onScale, onScaleStep, onRotation, onRotateStep, onReset, onRemove }
+  // handlers: { onUpload, onSelect, onDelete, onOpacity, onScale, onScaleStep,
+  //             onRotation, onRotateStep, onReset, onRemove }
   function create(handlers) {
     let collapsed = false;
 
@@ -43,11 +45,17 @@
       class: 'imgovl-file-input',
       type: 'file',
       accept: 'image/*',
+      multiple: true,
     });
     const dropzone = el('div', { class: 'imgovl-dropzone' }, [
       el('span', { class: 'imgovl-dropzone-text', text: '이미지를 끌어다 놓거나 클릭해 선택' }),
       fileInput,
     ]);
+
+    // ---- 사진 목록 ----
+    const photoList = el('div', { class: 'imgovl-photo-list' });
+    // 사진 id → { item, thumb }
+    const photoItems = new Map();
 
     // ---- 슬라이더 행 헬퍼 ----
     function sliderRow(labelText, { min, max, step, value }) {
@@ -112,22 +120,28 @@
     const removeBtn = el('button', {
       class: 'imgovl-action-btn imgovl-danger',
       type: 'button',
-      text: '제거',
+      text: '선택 사진 제거',
     });
     resetBtn.addEventListener('click', () => handlers.onReset());
     removeBtn.addEventListener('click', () => handlers.onRemove());
     const actions = el('div', { class: 'imgovl-actions' }, [resetBtn, removeBtn]);
 
     // ---- 힌트 ----
+    // 조작 키 레이블: macOS 는 Command(⌘), 그 외는 Ctrl.
+    const modeKeyLabel = /Mac|iPhone|iPad|iPod/.test(
+      navigator.platform || navigator.userAgent || ''
+    )
+      ? '⌘'
+      : 'Ctrl';
     const hint = el('div', {
       class: 'imgovl-hint',
-      text:
-        'Ctrl 홀드 = 이미지 조작: 본체 드래그=이동, 꼭짓점·모서리=비율 유지 크기조절, 상단 핸들=회전(정밀), 휠=줌 / 놓으면 웹 조작',
+      text: `여러 장 업로드 가능. 목록에서 사진 선택/삭제. ${modeKeyLabel} 홀드 = 이미지 조작: 본체 드래그=이동(커서 아래 사진 선택), 꼭짓점·모서리=크기조절, 상단 핸들=회전, 휠=줌 / 놓으면 웹 조작`,
     });
 
     // ---- 본문 ----
     const body = el('div', { class: 'imgovl-body' }, [
       dropzone,
+      photoList,
       opacityRow,
       scaleRow,
       rotationRow,
@@ -145,10 +159,14 @@
     }
     collapseBtn.addEventListener('click', () => setCollapsed(!collapsed));
 
-    // ---- 업로드 바인딩 ----
+    // ---- 업로드 바인딩 (여러 장 지원) ----
+    function uploadFiles(files) {
+      for (const file of files) {
+        if (file && file.type.startsWith('image/')) handlers.onUpload(file);
+      }
+    }
     fileInput.addEventListener('change', () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (file) handlers.onUpload(file);
+      if (fileInput.files && fileInput.files.length) uploadFiles(Array.from(fileInput.files));
       fileInput.value = ''; // 같은 파일 재선택 허용
     });
     dropzone.addEventListener('click', (e) => {
@@ -172,21 +190,72 @@
       e.preventDefault();
       e.stopPropagation();
       dropzone.classList.remove('imgovl-dragover');
-      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file && file.type.startsWith('image/')) handlers.onUpload(file);
+      if (e.dataTransfer && e.dataTransfer.files) uploadFiles(Array.from(e.dataTransfer.files));
     });
+
+    // ---- 사진 목록 렌더 (id 기준 reconcile) ----
+    function renderPhotoList(state) {
+      const photos = state.photos || [];
+      // 제거: 더 이상 없는 사진 항목.
+      for (const [id, entry] of photoItems) {
+        if (!photos.some((p) => p.id === id)) {
+          entry.item.remove();
+          photoItems.delete(id);
+        }
+      }
+      // 생성 + 순서 정렬 + 선택 표시. 목록은 최신(위쪽 z-order)이 맨 위에 오도록 역순 표시.
+      const ordered = photos.slice().reverse();
+      ordered.forEach((p, idx) => {
+        let entry = photoItems.get(p.id);
+        if (!entry) {
+          const thumb = el('img', { class: 'imgovl-thumb', alt: '', draggable: false });
+          const label = el('span', { class: 'imgovl-photo-label' });
+          const del = el('button', {
+            class: 'imgovl-photo-del',
+            type: 'button',
+            title: '삭제',
+            text: '×',
+          });
+          const item = el('div', { class: 'imgovl-photo-item' }, [thumb, label, del]);
+          item.addEventListener('click', (e) => {
+            if (e.target === del) return;
+            handlers.onSelect(p.id);
+          });
+          del.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handlers.onDelete(p.id);
+          });
+          entry = { item, thumb, label };
+          photoItems.set(p.id, entry);
+        }
+        if (entry.thumb.getAttribute('src') !== p.src) entry.thumb.src = p.src;
+        const name = p.name || `사진 ${photos.length - idx}`;
+        entry.label.textContent = name;
+        entry.label.title = name;
+        entry.item.classList.toggle('imgovl-selected', p.id === state.selectedId);
+        photoList.appendChild(entry.item); // 순서 유지(역순)
+      });
+
+      photoList.classList.toggle('imgovl-empty', photos.length === 0);
+    }
 
     // ---- 상태 → 컨트롤 역동기화 ----
     function sync(state) {
-      const opacityPct = Math.round(state.opacity * 100);
+      renderPhotoList(state);
+
+      const selected = state.selectedId != null
+        ? (state.photos || []).find((p) => p.id === state.selectedId)
+        : null;
+
+      const opacityPct = Math.round((selected ? selected.opacity : 1) * 100);
       opacity.slider.value = String(opacityPct);
       opacity.valueText.textContent = `${opacityPct}%`;
 
-      const scalePct = Math.round(state.scale * 100);
+      const scalePct = Math.round((selected ? selected.scale : 1) * 100);
       scale.slider.value = String(scalePct);
       scale.valueText.textContent = `${scalePct}%`;
 
-      const rotDeg = T.round(state.rotation, 1);
+      const rotDeg = T.round(selected ? selected.rotation : 0, 1);
       rotation.slider.value = String(rotDeg);
       rotation.valueText.textContent = `${rotDeg.toFixed(1)}°`;
 
@@ -194,9 +263,8 @@
       badge.textContent = isImageMode ? '이미지 모드' : '웹 모드';
       badge.classList.toggle('imgovl-badge-image', isImageMode);
 
-      // 이미지가 없으면 변형/액션 컨트롤 비활성 표시.
-      const hasImage = !!state.src;
-      body.classList.toggle('imgovl-no-image', !hasImage);
+      // 선택된 사진이 없으면 변형/액션 컨트롤 비활성 표시.
+      body.classList.toggle('imgovl-no-selection', !selected);
     }
 
     return { panel, sync, setCollapsed };
