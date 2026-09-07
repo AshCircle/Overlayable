@@ -31,6 +31,10 @@
     selectedId: null, // 현재 선택된 사진 id
     mapLinked: false, // geojson.io 지도 연동 여부(브리지 카메라 첫 수신 시 true)
     nextId: 1, // 다음 사진 id (영속화되어 세션 간 id 충돌을 막는다)
+    workspace: {
+      baseUrl: 'http://localhost:8080', layers: [], layerId: null, revision: null,
+      status: '백엔드 연결 필요', error: false, selectedFeature: null,
+    },
   };
 
   // ---- 사진 헬퍼 ----
@@ -76,6 +80,16 @@
     },
     onExport: () => exportState(),
     onImport: (text) => importState(text),
+    onConnect: (url, key) => connectWorkspace(url, key),
+    onLayerSelect: (id) => selectLayer(id),
+    onLayerCreate: (request) => createLayer(request),
+    onLayerCopy: (request) => copyLayer(request),
+    onLayerRename: (name) => renameLayer(name),
+    onLayerDelete: (name) => deleteLayer(name),
+    onVerticalConnect: () => verticalConnectFlow(),
+    onFeatureSave: (properties) => patchSelectedFeature(properties),
+    onGeoJSONExport: () => exportCurrentGeoJSON(),
+    onLayerReload: () => reloadCurrentLayer(),
   });
   root.appendChild(panelApi.panel);
 
@@ -183,6 +197,7 @@
       if (!getPhoto(photo.id)) return; // 읽는 도중 삭제된 경우
       photo.src = String(reader.result || '');
       applyState(); // src 채워짐 → 프레임 표시 + 저장 예약
+      if (state.workspace.layerId != null) queueWorkspaceImageMutation(() => uploadWorkspacePhoto(file, photo));
     };
     reader.onerror = () => console.warn('[Overlayable] 이미지 읽기 실패:', file && file.name);
     reader.readAsDataURL(file);
@@ -193,6 +208,7 @@
   function removePhoto(id) {
     const p = getPhoto(id);
     if (!p) return;
+    if (state.workspace.layerId != null && p.remoteId) queueWorkspaceImageMutation(() => deleteWorkspacePhoto(p));
     if (gesture && gesture.photoId === id) endGesture(); // 조작 중인 사진이면 제스처 정리
     // 과거 세션의 blob: URL 잔재만 revoke(현재는 data URL 이라 revoke 불필요).
     if (typeof p.src === 'string' && p.src.startsWith('blob:')) URL.revokeObjectURL(p.src);
@@ -458,6 +474,7 @@
   let camera = null;
   let cameraRafId = null;
   let panelSyncTimer = null;
+  const bridgeRequests = new Map();
 
   // 수동 조작 직후 호출: 사진 중심의 화면 좌표를 지리 좌표로 역투영해 현재 카메라에 재고정.
   // project(unproject(pt)) 왕복이 정확히 일치하므로 재고정으로 화면 위치가 튀지 않는다.
@@ -517,7 +534,19 @@
     // 같은 창의 bridge.js 가 보낸 메시지만 수용하고 페이로드 숫자를 검증한다.
     if (e.source !== window || e.origin !== location.origin) return;
     const d = e.data;
-    if (!d || d.source !== 'overlayable-bridge' || d.type !== 'camera') return;
+    if (!d || d.source !== 'overlayable-bridge') return;
+    if (d.type === 'geojson-state') {
+      state.workspace.selectedFeature = d.selectedFeature || null;
+      const pending = d.requestId && bridgeRequests.get(d.requestId);
+      if (pending) { bridgeRequests.delete(d.requestId); d.ready ? pending.resolve(d.geojson) : pending.reject(new Error('geojson.io 편집기를 찾지 못했습니다.')); }
+      schedulePanelSync(); return;
+    }
+    if (d.type === 'geojson-error') {
+      const pending = d.requestId && bridgeRequests.get(d.requestId);
+      if (pending) { bridgeRequests.delete(d.requestId); pending.reject(new Error(d.message || 'geojson.io 연동 실패')); }
+      return;
+    }
+    if (d.type !== 'camera') return;
     if (![d.lng, d.lat, d.zoom, d.bearing, d.cx, d.cy].every(Number.isFinite)) return;
     camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy };
     if (!state.mapLinked) {
@@ -616,6 +645,253 @@
     if (camera) scheduleCameraSync(); // geo 앵커를 현재 지도 위치로 즉시 투영
   }
 
+  // ---- HongGwart layer workspace ----
+  let workspaceBusy = false;
+  let syncInFlight = null;
+  let imageMutationQueue = Promise.resolve();
+  let imageMutationBusy = false;
+  let baselineHash = null;
+  let syncTimer = null;
+
+  function setWorkspaceStatus(status, error = false) {
+    state.workspace.status = status; state.workspace.error = error; panelApi.sync(state);
+  }
+
+  function showWorkspaceError(error) {
+    const conflict = error && error.status === 409;
+    setWorkspaceStatus(conflict
+      ? '충돌: 다른 작업자가 변경했습니다. 로컬 편집은 유지됩니다. 레이어를 다시 불러오기 전에 GeoJSON을 내보내세요.'
+      : `동기화 실패: ${error && error.message ? error.message : error}`, true);
+  }
+
+  function queueWorkspaceImageMutation(operation) {
+    imageMutationQueue=imageMutationQueue.then(async()=>{imageMutationBusy=true;try{return await operation();}finally{imageMutationBusy=false;}})
+      .catch((error)=>{showWorkspaceError(error);});
+    return imageMutationQueue;
+  }
+
+  function bridge(type, payload = {}) {
+    const requestId = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { bridgeRequests.delete(requestId); reject(new Error('geojson.io 응답 시간이 초과되었습니다.')); }, 5000);
+      bridgeRequests.set(requestId, { resolve: (value) => { clearTimeout(timeout); resolve(value); }, reject: (error) => { clearTimeout(timeout); reject(error); } });
+      window.postMessage({ source: 'overlayable-content', type, requestId, ...payload }, location.origin);
+    });
+  }
+
+  async function exportCurrentGeoJSON() {
+    try {
+      const geojson=await bridge('geojson-read');
+      const blob=new Blob([JSON.stringify(geojson,null,2)],{type:'application/geo+json'});
+      const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url;
+      const layer=state.workspace.layers.find((l)=>l.id===state.workspace.layerId);
+      a.download=`${(layer?.name||'honggwart-layer').replace(/[^a-zA-Z0-9가-힣_-]+/g,'-')}-${timestamp()}.geojson`;
+      (document.body||document.documentElement).appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function reloadCurrentLayer() {
+    if(state.workspace.layerId==null) return;
+    try { const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
+      await applyRemoteSnapshot(response.data); setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  function transformPayload() {
+    return state.photos.filter((p) => p.remoteId).map((p) => ({ id: p.remoteId,
+      opacity: p.opacity, scale: p.scale, rotation: p.rotation, x: p.x, y: p.y,
+      naturalWidth: p.naturalW, naturalHeight: p.naturalH, geo: p.geo || {} }));
+  }
+
+  function canonicalHash(geojson, images = transformPayload()) {
+    return JSON.stringify({ geojson, images: images.map((x) => ({ ...x })).sort((a,b) => String(a.id).localeCompare(String(b.id))) });
+  }
+
+  async function connectWorkspace(url, key) {
+    try {
+      setWorkspaceStatus('연결 중…'); await NS.api.configure(url || 'http://localhost:8080', key || '');
+      state.workspace.baseUrl = (url || 'http://localhost:8080').replace(/\/$/, '');
+      await refreshLayers(); setWorkspaceStatus('연결됨 · 레이어를 선택하세요');
+    } catch (error) { showWorkspaceError(error); }
+  }
+
+  async function refreshLayers() {
+    const response = await NS.api.request('/api/admin/layers');
+    state.workspace.layers = response.data || []; panelApi.sync(state);
+  }
+
+  async function createLayer(request) {
+    try {
+      const response = await NS.api.request('/api/admin/layers', { method: 'POST', body: request });
+      await refreshLayers(); await selectLayer(response.data.id);
+    } catch (error) { showWorkspaceError(error); }
+  }
+
+  async function renameLayer(name) {
+    if (state.workspace.layerId == null) return;
+    try {
+      const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/name`, { method:'PUT',
+        body:{ name, expectedRevision:state.workspace.revision } });
+      state.workspace.revision=response.data.revision; await refreshLayers(); setWorkspaceStatus('레이어 이름 변경됨');
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function copyLayer(request) {
+    if (state.workspace.layerId == null) return;
+    try {
+      await syncNow(true);
+      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/copy`, {method:'POST',
+        body:{...request, expectedRevision:state.workspace.revision}});
+      await refreshLayers(); await selectLayer(response.data.id);
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function deleteLayer(confirmationName) {
+    if (state.workspace.layerId == null) return;
+    try {
+      await NS.api.request(`/api/admin/layers/${state.workspace.layerId}`, {method:'DELETE',
+        body:{confirmationName, expectedRevision:state.workspace.revision}});
+      state.workspace.layerId=null; state.workspace.revision=null; baselineHash=null;
+      state.photos=[]; state.selectedId=null;
+      await bridge('geojson-replace',{geojson:{type:'FeatureCollection',features:[]}});
+      await refreshLayers(); applyState(); setWorkspaceStatus('레이어가 삭제되었습니다.');
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function selectLayer(id) {
+    if (workspaceBusy || id === state.workspace.layerId) return;
+    const legacyPhotos = state.workspace.layerId == null ? state.photos.filter((p)=>!p.remoteId && p.src?.startsWith('data:')) : [];
+    const importLegacy = legacyPhotos.length > 0 && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
+    try {
+      // A failed/conflicting flush deliberately prevents the layer switch.
+      if(state.workspace.layerId != null) await syncNow(true);
+      workspaceBusy=true;
+      const response=await NS.api.request(`/api/admin/layers/${id}/snapshot`);
+      await applyRemoteSnapshot(response.data);
+      if(importLegacy) {
+        for(const photo of legacyPhotos) await uploadLegacyPhoto(photo);
+        const updated=await NS.api.request(`/api/admin/layers/${id}/snapshot`);
+        await applyRemoteSnapshot(updated.data);
+      }
+      setWorkspaceStatus(`동기화됨 · revision ${response.data.revision}`);
+    } catch(error){ showWorkspaceError(error); }
+    finally { workspaceBusy=false; }
+  }
+
+  async function applyRemoteSnapshot(snapshot) {
+    const editorGeoJSON=await bridge('geojson-replace',{geojson:snapshot.geojson});
+    const loaded=await Promise.all((snapshot.images||[]).map(async(meta,index)=>{
+      const content=await NS.api.request(meta.contentUrl,{responseType:'base64'});
+      return { id:index+1, uid:meta.id, remoteId:meta.id, name:meta.name,
+        src:`data:${meta.contentType};base64,${content.data}`, x:meta.x, y:meta.y,
+        scale:meta.scale, rotation:meta.rotation, opacity:meta.opacity,
+        naturalW:meta.naturalWidth, naturalH:meta.naturalHeight,
+        geo:meta.geo && Object.keys(meta.geo).length ? meta.geo : null };
+    }));
+    restoring=true;
+    state.photos=loaded; state.nextId=loaded.length+1; state.selectedId=loaded.length?loaded[loaded.length-1].id:null;
+    state.workspace.layerId=snapshot.layerId; state.workspace.revision=snapshot.revision;
+    const layerSummary=state.workspace.layers.find((layer)=>layer.id===snapshot.layerId);
+    if(layerSummary) layerSummary.revision=snapshot.revision;
+    NS.api.setLastLayer(snapshot.layerId).catch(()=>{});
+    restoring=false; applyState(); if(camera) scheduleCameraSync();
+    baselineHash=canonicalHash(editorGeoJSON || snapshot.geojson,
+      (snapshot.images||[]).map((m)=>({id:m.id,opacity:m.opacity,scale:m.scale,rotation:m.rotation,x:m.x,y:m.y,
+        naturalWidth:m.naturalWidth,naturalHeight:m.naturalHeight,geo:m.geo||{}})));
+  }
+
+  async function syncNow(force = false) {
+    if(((workspaceBusy || imageMutationBusy) && !force) || state.workspace.layerId == null) return;
+    if(syncInFlight) return syncInFlight;
+    syncInFlight=(async()=>{
+    const geojson=await bridge('geojson-read');
+    const localHash=canonicalHash(geojson);
+    if(localHash !== baselineHash) {
+      setWorkspaceStatus('저장 중…');
+      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`, {method:'PUT',
+        body:{expectedRevision:state.workspace.revision,geojson,images:transformPayload()}});
+      // Always apply normalized server output: Point moves propagate into every
+      // incident LineString, and a dragged LineString vertex propagates to Point.
+      await applyRemoteSnapshot(response.data);
+      setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
+    } else {
+      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
+      if(response.data.revision > state.workspace.revision) {
+        await applyRemoteSnapshot(response.data); setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
+      } else setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
+    }
+    })();
+    try { return await syncInFlight; } finally { syncInFlight=null; }
+  }
+
+  async function patchSelectedFeature(properties) {
+    try { await bridge('geojson-patch-selected',{properties}); await syncNow(); }
+    catch(error){ showWorkspaceError(error); }
+  }
+
+  async function verticalConnectFlow() {
+    if(state.workspace.layerId==null) return;
+    try {
+      await syncNow(true);
+      const feature=state.workspace.selectedFeature; const nodeId=feature?.properties?.overlayable?.nodeId;
+      if(!nodeId) throw new Error('먼저 저장된 Point 하나를 선택하세요.');
+      if(!state.workspace.connectionDraft) {
+        state.workspace.connectionDraft={sourceNodeId:nodeId,sourceLayerId:state.workspace.layerId};
+        setWorkspaceStatus('연결 시작점 저장됨 · 대상 층 레이어로 전환해 Point를 선택하세요.'); return;
+      }
+      const draft=state.workspace.connectionDraft;
+      if(draft.sourceLayerId===state.workspace.layerId) throw new Error('다른 층 레이어로 전환하세요.');
+      await refreshLayers();
+      const source=state.workspace.layers.find((l)=>l.id===draft.sourceLayerId);
+      if(!source) throw new Error('시작 레이어가 삭제되었습니다.');
+      const transport=prompt('이동 수단: STAIR 또는 ELEVATOR','STAIR');
+      const weight=Number(prompt('이동 가중치(m)','3'));
+      if(!transport || !(weight>0)) return;
+      await NS.api.request('/api/admin/layers/vertical-connections',{method:'POST', body:{
+        sourceNodeId:draft.sourceNodeId,targetNodeId:nodeId,transport,weight,bidirectional:true,
+        sourceExpectedRevision:source.revision,targetExpectedRevision:state.workspace.revision}});
+      state.workspace.connectionDraft=null;
+      await refreshLayers(); const current=state.workspace.layers.find((l)=>l.id===state.workspace.layerId);
+      if(current) state.workspace.revision=current.revision; baselineHash=null;
+      await syncNow(); setWorkspaceStatus('층 연결이 생성되었습니다.');
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function uploadWorkspacePhoto(file, photo) {
+    try {
+      const base64=photo.src.slice(photo.src.indexOf(',')+1);
+      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
+        {method:'POST',bodyType:'image-form',body:{base64,name:file.name||'image',contentType:file.type||'application/octet-stream'}});
+      photo.remoteId=response.data.id; photo.uid=response.data.id; state.workspace.revision += 1; baselineHash=null;
+      await syncNow(true);
+    } catch(error){ showWorkspaceError(error); }
+  }
+
+  async function uploadLegacyPhoto(photo) {
+    const comma=photo.src.indexOf(','); const header=photo.src.slice(0,comma);
+    const contentType=(header.match(/^data:([^;]+)/)||[])[1]||'image/png';
+    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
+      {method:'POST',bodyType:'image-form',body:{base64:photo.src.slice(comma+1),name:photo.name||'image',contentType}});
+    state.workspace.revision += 1;
+  }
+
+  async function deleteWorkspacePhoto(photo) {
+    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images/${photo.remoteId}?expectedRevision=${state.workspace.revision}`,{method:'DELETE'});
+    state.workspace.revision += 1; baselineHash=null;
+  }
+
+  async function bootstrapWorkspace() {
+    try {
+      const auth=await NS.api.settings(); state.workspace.baseUrl=auth.baseUrl;
+      if(auth.apiKey) {
+        await refreshLayers(); setWorkspaceStatus('연결됨 · 레이어를 선택하세요');
+        if(auth.lastLayerId && state.workspace.layers.some((l)=>l.id===auth.lastLayerId)) await selectLayer(auth.lastLayerId);
+      }
+      else panelApi.sync(state);
+    } catch(error){ showWorkspaceError(error); }
+    syncTimer=setInterval(()=>syncNow().catch(showWorkspaceError),10000);
+  }
+
   // ---- 자동 복원 ----
   async function restore() {
     const saved = await NS.storage.load();
@@ -625,6 +901,7 @@
       state.photos = saved.photos.map((p) => ({
         id: p.id,
         uid: p.uid || crypto.randomUUID(),
+        remoteId: p.remoteId || null,
         name: p.name || '이미지',
         src: p.src,
         x: Number.isFinite(p.x) ? p.x : 0,
@@ -653,5 +930,5 @@
 
   // 초기 반영 (active=false → 숨김 상태) 후, 저장된 상태를 비동기 복원.
   applyState();
-  restore();
+  (async()=>{ await restore(); await bootstrapWorkspace(); })();
 })();

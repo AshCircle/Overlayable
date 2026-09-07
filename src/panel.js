@@ -40,6 +40,62 @@
     });
     const header = el('div', { class: 'imgovl-header' }, [title, badge, collapseBtn]);
 
+    // ---- HongGwart shared layer workspace ----
+    const backendUrl = el('input', { class: 'imgovl-text', type: 'url', placeholder: 'http://localhost:8080' });
+    const apiKey = el('input', { class: 'imgovl-text', type: 'password', placeholder: 'Admin API key' });
+    const connectBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '연결' });
+    const layerSelect = el('select', { class: 'imgovl-text imgovl-layer-select' });
+    layerSelect.appendChild(el('option', { value: '', text: '레이어 선택…' }));
+    const newLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '새 레이어' });
+    const copyLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '복사' });
+    const renameLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '이름 변경' });
+    const deleteLayerBtn = el('button', { class: 'imgovl-action-btn imgovl-danger', type: 'button', text: '삭제' });
+    const geojsonExportBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: 'GeoJSON 내보내기' });
+    const reloadLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '원격 다시 불러오기' });
+    const verticalBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '층 연결' });
+    const syncStatus = el('div', { class: 'imgovl-sync-status', text: '백엔드 연결 필요' });
+    const featureName = el('input', { class: 'imgovl-text', type: 'text', placeholder: '선택 Point 이름' });
+    const featureType = el('select', { class: 'imgovl-text' });
+    ['WAYPOINT','JUNCTION','ENTRANCE','VERTICAL_LINK','POI'].forEach((v) => featureType.appendChild(el('option',{value:v,text:v})));
+    const featureSearchable = el('input', { type: 'checkbox' });
+    const featureRoom = el('input', { class: 'imgovl-text', type: 'text', placeholder: '호실 번호' });
+    const featureMeta = el('div', { class: 'imgovl-sync-status', text: 'Point를 선택하세요' });
+    const featureSave = el('button', { class: 'imgovl-action-btn', type: 'button', text: '선택 Point 반영' });
+    const workspace = el('section', { class: 'imgovl-workspace' }, [
+      el('div', { class: 'imgovl-section-title', text: 'HongGwart 공유 레이어' }),
+      backendUrl, apiKey, connectBtn, layerSelect,
+      el('div', { class: 'imgovl-actions' }, [newLayerBtn, copyLayerBtn]),
+      el('div', { class: 'imgovl-actions' }, [renameLayerBtn, deleteLayerBtn, verticalBtn]),
+      el('div', { class: 'imgovl-actions' }, [geojsonExportBtn, reloadLayerBtn]),
+      syncStatus,
+      el('div', { class: 'imgovl-feature-editor' }, [
+        el('div', { class: 'imgovl-section-title', text: '선택 Point' }), featureMeta, featureName, featureType,
+        el('label', { class: 'imgovl-check-label' }, [featureSearchable, document.createTextNode(' 검색 가능')]),
+        featureRoom, featureSave,
+      ]),
+    ]);
+
+    connectBtn.addEventListener('click', () => handlers.onConnect(backendUrl.value, apiKey.value));
+    layerSelect.addEventListener('change', () => { if (layerSelect.value) handlers.onLayerSelect(Number(layerSelect.value)); });
+    function layerFields(prefix) {
+      const name = prompt(`${prefix} 레이어 이름`); if (!name) return null;
+      const buildingCode = prompt('건물 코드 (예: T, C)'); if (!buildingCode) return null;
+      const buildingName = prompt('건물 이름 (예: T동)'); if (!buildingName) return null;
+      const floor = prompt('층 코드 (예: 10, B1, L)'); if (!floor) return null;
+      const floorOrder = Number(prompt('층 정렬 순서 (예: B1=-1, L=0, 10=10)', '0'));
+      if (!Number.isInteger(floorOrder)) { alert('층 정렬 순서는 정수여야 합니다.'); return null; }
+      return { name, buildingCode, buildingName, floor, floorOrder };
+    }
+    newLayerBtn.addEventListener('click', () => { const x=layerFields('새'); if(x) handlers.onLayerCreate(x); });
+    copyLayerBtn.addEventListener('click', () => { const x=layerFields('복사할'); if(x) handlers.onLayerCopy(x); });
+    renameLayerBtn.addEventListener('click', () => { const name=prompt('새 레이어 이름'); if(name) handlers.onLayerRename(name); });
+    deleteLayerBtn.addEventListener('click', () => { const name=prompt('삭제할 레이어 이름을 정확히 입력하세요.'); if(name) handlers.onLayerDelete(name); });
+    geojsonExportBtn.addEventListener('click', () => handlers.onGeoJSONExport());
+    reloadLayerBtn.addEventListener('click', () => { if(confirm('저장되지 않은 로컬 GeoJSON 변경을 버리고 원격 데이터를 불러올까요?')) handlers.onLayerReload(); });
+    verticalBtn.addEventListener('click', () => handlers.onVerticalConnect());
+    featureSave.addEventListener('click', () => handlers.onFeatureSave({ name: featureName.value || null,
+      nodeType: featureType.value, searchable: featureSearchable.checked, roomNumber: featureRoom.value || null }));
+
     // ---- 업로드 드롭존 ----
     const fileInput = el('input', {
       class: 'imgovl-file-input',
@@ -173,6 +229,7 @@
 
     // ---- 본문 ----
     const body = el('div', { class: 'imgovl-body' }, [
+      workspace,
       dropzone,
       photoList,
       opacityRow,
@@ -307,6 +364,28 @@
 
       // 선택된 사진이 없으면 변형/액션 컨트롤 비활성 표시.
       body.classList.toggle('imgovl-no-selection', !selected);
+
+      const ws = state.workspace || {};
+      if (document.activeElement !== backendUrl) backendUrl.value = ws.baseUrl || 'http://localhost:8080';
+      const existing = new Map(Array.from(layerSelect.options).map((o) => [o.value, o]));
+      for (const layer of ws.layers || []) {
+        const value=String(layer.id); let option=existing.get(value);
+        if(!option){ option=el('option',{value}); layerSelect.appendChild(option); }
+        option.textContent=`${layer.name} (${layer.buildingCode} ${layer.floor})`; existing.delete(value);
+      }
+      existing.delete(''); for(const option of existing.values()) option.remove();
+      layerSelect.value = ws.layerId == null ? '' : String(ws.layerId);
+      syncStatus.textContent = ws.status || '백엔드 연결 필요';
+      syncStatus.className = 'imgovl-sync-status ' + (ws.error ? 'imgovl-sync-error' : '');
+      const sf = ws.selectedFeature;
+      const point = sf && sf.geometry && sf.geometry.type === 'Point';
+      workspace.classList.toggle('imgovl-no-point', !point);
+      if(point && document.activeElement !== featureName) {
+        const p=sf.properties||{}; featureName.value=p.name||''; featureType.value=p.nodeType||'WAYPOINT';
+        featureSearchable.checked=!!p.searchable; featureRoom.value=p.roomNumber||'';
+        featureMeta.textContent = p.overlayable?.nodeId ? `Node #${p.overlayable.nodeId}` : '저장 후 Node ID가 부여됩니다';
+      }
+      verticalBtn.textContent = ws.connectionDraft ? '이 Point에 층 연결 완료' : '선택 Point에서 층 연결 시작';
     }
 
     return { panel, sync, setCollapsed };
