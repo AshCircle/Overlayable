@@ -15,6 +15,7 @@
   function pickPhoto(p, { withId }) {
     const rec = {
       uid: p.uid,
+      remoteId: p.remoteId,
       name: p.name,
       src: p.src, // base64 data URL
       scale: p.scale,
