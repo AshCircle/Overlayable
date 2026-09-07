@@ -27,6 +27,8 @@
   let rectTimer = null;
   let lastRectKey = '';
   let attempts = 0;
+  let editor = null; // { persistence, data }; discovered from React context/hooks
+  let editorTimer = null;
 
   // 빠른 폴링(250ms × 40회 = 10초) → 실패 시 경고 1회 → 2초 간격으로 영구 재시도(SPA 늦은 마운트 대비).
   const FAST_MS = 250;
@@ -124,6 +126,9 @@
   }
 
   function probeFiber(fiber) {
+    discoverEditorValue(fiber.memoizedState);
+    discoverEditorValue(fiber.memoizedProps);
+    discoverEditorValue(fiber.dependencies);
     let m =
       probe(fiber.stateNode) ||
       probe(fiber.ref && fiber.ref.current) ||
@@ -168,6 +173,99 @@
       }
     }
     return null;
+  }
+
+  // geojson.io does not expose a public editor API. Its current memory persistence
+  // object and Jotai data value are reachable through React context/hook values.
+  // Duck typing keeps a future internal change contained: sync is disabled while
+  // camera/image overlay continues to work.
+  function discoverEditorValue(root) {
+    if (!root || typeof root !== 'object') return;
+    const queue = [{ value: root, depth: 0 }];
+    const seen = new Set();
+    let persistence = editor && editor.persistence;
+    let data = editor && editor.data;
+    while (queue.length && seen.size < 800) {
+      const { value, depth } = queue.shift();
+      if (!value || typeof value !== 'object' || seen.has(value)) continue;
+      seen.add(value);
+      try {
+        if (typeof value.useTransact === 'function' && value.idMap) persistence = value;
+        if (value.featureMap instanceof Map && value.selection) data = value;
+      } catch (_) {}
+      if (depth >= 4) continue;
+      let values = [];
+      try {
+        if (Array.isArray(value)) values = value.slice(0, 40);
+        else for (const key of Object.keys(value).slice(0, 60)) values.push(value[key]);
+      } catch (_) {}
+      for (const child of values) if (child && typeof child === 'object') queue.push({ value: child, depth: depth + 1 });
+    }
+    if (persistence && data) editor = { persistence, data };
+  }
+
+  function refreshEditor() {
+    const containers = document.querySelectorAll('.mapboxgl-map');
+    for (const el of containers) scanFiberForEditor(el);
+    if (editor) postGeoJSON();
+  }
+
+  function scanFiberForEditor(el) {
+    try {
+      let host=el, key=null;
+      for(let up=0;host&&up<10;up++) { key=Object.keys(host).find((k)=>k.indexOf('__reactFiber$')===0||k.indexOf('__reactContainer$')===0); if(key) break; host=host.parentElement; }
+      if(!host||!key) return;
+      const queue=[]; let seed=host[key]; for(let i=0;seed&&i<25;i++){queue.push(seed);seed=seed.return;}
+      const seen=new Set();
+      while(queue.length&&seen.size<12000){const fiber=queue.shift();if(!fiber||seen.has(fiber))continue;seen.add(fiber);
+        discoverEditorValue(fiber.memoizedState);discoverEditorValue(fiber.memoizedProps);discoverEditorValue(fiber.dependencies);
+        if(fiber.child)queue.push(fiber.child);if(fiber.sibling)queue.push(fiber.sibling);}
+    } catch(_) {}
+  }
+
+  function featureCollection() {
+    if (!editor || !(editor.data.featureMap instanceof Map)) return null;
+    return { type: 'FeatureCollection', features: Array.from(editor.data.featureMap.values(), (wrapped) => wrapped.feature) };
+  }
+
+  function selectedFeature() {
+    if (!editor) return null;
+    const selection = editor.data.selection;
+    const id = selection && (selection.id || (selection.ids && selection.ids[0]));
+    const wrapped = id && editor.data.featureMap.get(id);
+    return wrapped ? wrapped.feature : null;
+  }
+
+  function postGeoJSON(requestId) {
+    const geojson = featureCollection();
+    window.postMessage({ source: 'overlayable-bridge', type: 'geojson-state', requestId,
+      ready: !!geojson, geojson, selectedFeature: selectedFeature() }, location.origin);
+  }
+
+  async function replaceGeoJSON(geojson, requestId) {
+    if (!editor || !geojson || !Array.isArray(geojson.features)) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
+    const oldIds = Array.from(editor.data.featureMap.keys());
+    const seen = new Set();
+    const putFeatures = geojson.features.map((feature) => {
+      let id = typeof feature.id === 'string' && /^[0-9a-f-]{36}$/i.test(feature.id) ? feature.id : crypto.randomUUID();
+      while (seen.has(id)) id = crypto.randomUUID();
+      seen.add(id);
+      feature = { ...feature, id };
+      return { id, feature };
+    });
+    await editor.persistence.useTransact()({ note: 'Loaded HongGwart layer', deleteFeatures: oldIds, putFeatures });
+    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+  }
+
+  async function patchSelected(properties, requestId) {
+    if (!editor) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
+    const selection = editor.data.selection;
+    const id = selection && (selection.id || (selection.ids && selection.ids[0]));
+    const wrapped = id && editor.data.featureMap.get(id);
+    if (!wrapped || wrapped.feature.geometry?.type !== 'Point') throw new Error('Point 하나를 선택하세요.');
+    await editor.persistence.useTransact()({ note: 'Edited HongGwart node', deleteFeatures: [],
+      putFeatures: [{ ...wrapped, feature: { ...wrapped.feature, properties: { ...(wrapped.feature.properties || {}), ...properties } } }] });
+    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
   }
 
   // ---- 카메라 전송 ----
@@ -275,10 +373,21 @@
   window.addEventListener('message', (e) => {
     if (e.source !== window) return;
     const d = e.data;
-    if (!d || d.source !== 'overlayable-content' || d.type !== 'ping') return;
-    if (map) post();
+    if (!d || d.source !== 'overlayable-content') return;
+    if (d.type === 'ping') { if (map) post(); refreshEditor(); return; }
+    if (d.type === 'geojson-read') { refreshEditor(); postGeoJSON(d.requestId); return; }
+    if (d.type === 'geojson-replace') {
+      replaceGeoJSON(d.geojson, d.requestId).catch((error) => window.postMessage({ source: 'overlayable-bridge',
+        type: 'geojson-error', requestId: d.requestId, message: error.message }, location.origin));
+      return;
+    }
+    if (d.type === 'geojson-patch-selected') {
+      patchSelected(d.properties, d.requestId).catch((error) => window.postMessage({ source: 'overlayable-bridge',
+        type: 'geojson-error', requestId: d.requestId, message: error.message }, location.origin));
+    }
   });
 
   tick(); // 즉시 1회 시도
   if (!map) startPolling(FAST_MS);
+  editorTimer = setInterval(refreshEditor, 1000);
 })();
