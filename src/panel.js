@@ -380,7 +380,12 @@
       const sf = ws.selectedFeature;
       const point = sf && sf.geometry && sf.geometry.type === 'Point';
       workspace.classList.toggle('imgovl-no-point', !point);
-      if(point && document.activeElement !== featureName) {
+      featureSave.disabled = !point;
+      if (!point) {
+        featureMeta.textContent = 'Point를 선택하세요';
+        featureName.value = ''; featureType.value = 'WAYPOINT';
+        featureSearchable.checked = false; featureRoom.value = '';
+      } else if (![featureName, featureType, featureSearchable, featureRoom].includes(document.activeElement)) {
         const p=sf.properties||{}; featureName.value=p.name||''; featureType.value=p.nodeType||'WAYPOINT';
         featureSearchable.checked=!!p.searchable; featureRoom.value=p.roomNumber||'';
         featureMeta.textContent = p.overlayable?.nodeId ? `Node #${p.overlayable.nodeId}` : '저장 후 Node ID가 부여됩니다';

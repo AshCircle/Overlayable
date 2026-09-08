@@ -28,6 +28,9 @@
   let lastRectKey = '';
   let attempts = 0;
   let editor = null; // { persistence, data }; discovered from React context/hooks
+  let editorPersistence = null;
+  let editorData = null;
+  let editorDataSource = null;
   let editorTimer = null;
 
   // 빠른 폴링(250ms × 40회 = 10초) → 실패 시 경고 1회 → 2초 간격으로 영구 재시도(SPA 늦은 마운트 대비).
@@ -183,15 +186,19 @@
     if (!root || typeof root !== 'object') return;
     const queue = [{ value: root, depth: 0 }];
     const seen = new Set();
-    let persistence = editor && editor.persistence;
-    let data = editor && editor.data;
     while (queue.length && seen.size < 800) {
       const { value, depth } = queue.shift();
       if (!value || typeof value !== 'object' || seen.has(value)) continue;
       seen.add(value);
       try {
-        if (typeof value.useTransact === 'function' && value.idMap) persistence = value;
-        if (value.featureMap instanceof Map && value.selection) data = value;
+        // Jotai useAtomValue stores [value, store, atom] in its reducer hook.
+        // Read the live store instead of stale React render/alternate snapshots.
+        if (Array.isArray(value) && value[0]?.featureMap instanceof Map &&
+            typeof value[1]?.get === 'function' && typeof value[2]?.read === 'function') {
+          editorDataSource = { store: value[1], atom: value[2] };
+        }
+        if (typeof value.useTransact === 'function' && value.idMap) editorPersistence = value;
+        if (value.featureMap instanceof Map && value.selection) editorData = value;
       } catch (_) {}
       if (depth >= 4) continue;
       let values = [];
@@ -201,12 +208,21 @@
       } catch (_) {}
       for (const child of values) if (child && typeof child === 'object') queue.push({ value: child, depth: depth + 1 });
     }
-    if (persistence && data) editor = { persistence, data };
+    // Context and data live on different fibers; retain each discovery separately.
+    if (editorPersistence && editorData) editor = { persistence: editorPersistence, data: editorData };
   }
 
   function refreshEditor() {
+    if (editorDataSource && editorPersistence) {
+      editor = { persistence: editorPersistence, data: editorDataSource.store.get(editorDataSource.atom) };
+      postGeoJSON();
+      return;
+    }
     const containers = document.querySelectorAll('.mapboxgl-map');
     for (const el of containers) scanFiberForEditor(el);
+    if (editorDataSource && editorPersistence) {
+      editor = { persistence: editorPersistence, data: editorDataSource.store.get(editorDataSource.atom) };
+    }
     if (editor) postGeoJSON();
   }
 
@@ -243,6 +259,7 @@
   }
 
   async function replaceGeoJSON(geojson, requestId) {
+    refreshEditor();
     if (!editor || !geojson || !Array.isArray(geojson.features)) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
     const oldIds = Array.from(editor.data.featureMap.keys());
     const seen = new Set();
@@ -258,6 +275,7 @@
   }
 
   async function patchSelected(properties, requestId) {
+    refreshEditor();
     if (!editor) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
     const selection = editor.data.selection;
     const id = selection && (selection.id || (selection.ids && selection.ids[0]));
@@ -331,6 +349,10 @@
   // 리스너 해제는 생략해도 무해하다.
   function onRemoved() {
     map = null;
+    editor = null;
+    editorPersistence = null;
+    editorData = null;
+    editorDataSource = null;
     if (rectTimer) {
       clearInterval(rectTimer);
       rectTimer = null;
