@@ -14,13 +14,32 @@ chrome.action.onClicked.addListener((tab) => {
 // Admin key and response bodies never enter geojson.io's MAIN world. All network
 // traffic crosses this service-worker boundary from the isolated content script.
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (!message || message.type !== 'OVERLAYABLE_API') return;
+  if (!message || !['OVERLAYABLE_API', 'OVERLAYABLE_SETTINGS', 'OVERLAYABLE_CONFIGURE'].includes(message.type)) return;
   (async () => {
-    const baseUrl = String(message.baseUrl || '').replace(/\/$/, '');
+    const localKey = 'overlayable_backend_url';
+    const sessionKey = 'overlayable_admin_key';
+    if (message.type === 'OVERLAYABLE_CONFIGURE') {
+      const configured = new URL(message.baseUrl);
+      if (!['http:', 'https:'].includes(configured.protocol)) throw new Error('HTTP(S) 백엔드 URL이 필요합니다.');
+      await chrome.storage.local.set({ [localKey]: String(message.baseUrl).replace(/\/$/, '') });
+      await chrome.storage.session.set({ [sessionKey]: message.apiKey || '' });
+      sendResponse({ ok: true });
+      return;
+    }
+    const [local, session] = await Promise.all([
+      chrome.storage.local.get([localKey, 'overlayable_last_layer_id']),
+      chrome.storage.session.get(sessionKey),
+    ]);
+    const baseUrl = local[localKey] || 'http://localhost:8080';
+    if (message.type === 'OVERLAYABLE_SETTINGS') {
+      sendResponse({ ok: true, data: { baseUrl, hasApiKey: !!session[sessionKey],
+        lastLayerId: local.overlayable_last_layer_id || null } });
+      return;
+    }
     if (!/^https?:\/\//.test(baseUrl)) throw new Error('HTTP(S) 백엔드 URL이 필요합니다.');
     const url = new URL(baseUrl + String(message.path || ''));
     const headers = new Headers(message.headers || {});
-    if (message.apiKey) headers.set('X-Honggwart-Admin-Key', message.apiKey);
+    if (session[sessionKey]) headers.set('X-Honggwart-Admin-Key', session[sessionKey]);
     let body;
     if (message.bodyType === 'image-form') {
       const bytes = Uint8Array.from(atob(message.body.base64), (c) => c.charCodeAt(0));

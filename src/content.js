@@ -883,7 +883,7 @@
   async function bootstrapWorkspace() {
     try {
       const auth=await NS.api.settings(); state.workspace.baseUrl=auth.baseUrl;
-      if(auth.apiKey) {
+      if(auth.hasApiKey) {
         await refreshLayers(); setWorkspaceStatus('연결됨 · 레이어를 선택하세요');
         if(auth.lastLayerId && state.workspace.layers.some((l)=>l.id===auth.lastLayerId)) await selectLayer(auth.lastLayerId);
       }
