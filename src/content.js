@@ -704,7 +704,8 @@
   }
 
   function canonicalHash(geojson, images = transformPayload()) {
-    return JSON.stringify({ geojson, images: images.map((x) => ({ ...x })).sort((a,b) => String(a.id).localeCompare(String(b.id))) });
+    return JSON.stringify({ geojson, images: images.map(NS.transform.sharedImageTransform)
+      .sort((a,b) => String(a.id).localeCompare(String(b.id))) });
   }
 
   async function connectWorkspace(url, key) {
