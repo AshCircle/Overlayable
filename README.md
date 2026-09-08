@@ -1,5 +1,7 @@
 # Overlayable
 
+층별 편집과 공동 작업 방법은 [한국어 사용 가이드](docs/USER_GUIDE.md)를 참고하세요.
+
 ## HongGwart shared layers
 
 Open `https://geojson.io`, open the Overlayable panel, and enter the HongGwart backend URL
