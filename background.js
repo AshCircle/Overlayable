@@ -10,3 +10,60 @@ chrome.action.onClicked.addListener((tab) => {
       // 익스텐션 설치 전 로드된 탭이면 무시한다. 새로고침 후 재시도하면 동작.
     });
 });
+
+// Admin key and response bodies never enter geojson.io's MAIN world. All network
+// traffic crosses this service-worker boundary from the isolated content script.
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message || !['OVERLAYABLE_API', 'OVERLAYABLE_SETTINGS', 'OVERLAYABLE_CONFIGURE'].includes(message.type)) return;
+  (async () => {
+    const localKey = 'overlayable_backend_url';
+    const sessionKey = 'overlayable_admin_key';
+    if (message.type === 'OVERLAYABLE_CONFIGURE') {
+      const configured = new URL(message.baseUrl);
+      if (!['http:', 'https:'].includes(configured.protocol)) throw new Error('HTTP(S) 백엔드 URL이 필요합니다.');
+      await chrome.storage.local.set({ [localKey]: String(message.baseUrl).replace(/\/$/, '') });
+      await chrome.storage.session.set({ [sessionKey]: message.apiKey || '' });
+      sendResponse({ ok: true });
+      return;
+    }
+    const [local, session] = await Promise.all([
+      chrome.storage.local.get([localKey, 'overlayable_last_layer_id']),
+      chrome.storage.session.get(sessionKey),
+    ]);
+    const baseUrl = local[localKey] || 'http://localhost:8080';
+    if (message.type === 'OVERLAYABLE_SETTINGS') {
+      sendResponse({ ok: true, data: { baseUrl, hasApiKey: !!session[sessionKey],
+        lastLayerId: local.overlayable_last_layer_id || null } });
+      return;
+    }
+    if (!/^https?:\/\//.test(baseUrl)) throw new Error('HTTP(S) 백엔드 URL이 필요합니다.');
+    const url = new URL(baseUrl + String(message.path || ''));
+    const headers = new Headers(message.headers || {});
+    if (session[sessionKey]) headers.set('X-Honggwart-Admin-Key', session[sessionKey]);
+    let body;
+    if (message.bodyType === 'image-form') {
+      const bytes = Uint8Array.from(atob(message.body.base64), (c) => c.charCodeAt(0));
+      const form = new FormData();
+      form.append('file', new Blob([bytes], { type: message.body.contentType }), message.body.name);
+      body = form;
+    } else if (message.bodyType === 'base64') {
+      const bytes = Uint8Array.from(atob(message.body), (c) => c.charCodeAt(0));
+      body = bytes;
+    } else if (message.body != null) {
+      headers.set('Content-Type', 'application/json');
+      body = JSON.stringify(message.body);
+    }
+    const response = await fetch(url, { method: message.method || 'GET', headers, body });
+    const contentType = response.headers.get('content-type') || '';
+    let data;
+    if (message.responseType === 'base64') {
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
+      data = btoa(binary);
+    } else if (contentType.includes('json')) data = await response.json();
+    else data = await response.text();
+    sendResponse({ ok: response.ok, status: response.status, data,
+      etag: response.headers.get('etag'), contentType });
+  })().catch((error) => sendResponse({ ok: false, status: 0, error: error.message }));
+  return true;
+});

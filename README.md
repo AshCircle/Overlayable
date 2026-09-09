@@ -1,5 +1,32 @@
 # Overlayable
 
+층별 편집과 공동 작업 방법은 [한국어 사용 가이드](docs/USER_GUIDE.md)를 참고하세요.
+
+## HongGwart shared layers
+
+Open `https://geojson.io`, open the Overlayable panel, and enter the HongGwart backend URL
+(default `http://localhost:8080`) and the admin API key. The key is kept in
+`chrome.storage.session` and requests are made by the extension service worker, so it is never
+injected into the page's JavaScript context.
+For the backend's unchanged local profile, the development-only default key is
+`dev-only-change-me`; set `HONGGWART_ADMIN_API_KEY` to replace it.
+
+Each layer is identified by a display name plus structured building code/name, floor code, and
+numeric floor order. Floor codes may be values such as `10`, `B1`, or `L`. Selecting a layer
+replaces geojson.io's current FeatureCollection and displays only that layer's shared overlay
+images. Local graph/image-transform edits are saved every 10 seconds. A layer switch first saves
+the current layer and is cancelled on network or revision conflict.
+
+Dragging either a Point or any endpoint/intermediate vertex of a LineString updates the same
+HongGwart node. The server returns a normalized snapshot so every Point and incident LineString
+is updated together. If two representations of one node are moved to different coordinates in
+the same edit, the save is rejected instead of choosing one silently.
+
+Layer copy duplicates graph nodes and internal edges with new identifiers; images and cross-floor
+connections are intentionally not copied. Shared images are stored in the backend. Layer deletion
+requires retyping the layer name and removes its graph, images, and cross-floor connections while
+retaining the symbolic building node.
+
 [geojson.io](https://geojson.io) 지도 위에 이미지를 오버레이로 띄우는 Manifest V3 크롬 익스텐션.
 지도를 드래그/확대축소/회전하면 **사진이 지도에 고정된 것처럼 함께 움직이고**, 필요할 때는 사진을
 직접 조작(이동/크기/회전/투명도)해 지도 위 원하는 위치에 다시 고정할 수 있습니다.

@@ -77,7 +77,17 @@
     );
   }
 
+  function sharedImageTransform(image) {
+    const stable = { ...image };
+    // Screen transforms are derived from each viewer's camera for anchored images.
+    if (Number.isFinite(stable.geo?.lat) && Number.isFinite(stable.geo?.lng)) {
+      delete stable.x; delete stable.y; delete stable.scale; delete stable.rotation;
+    }
+    return stable;
+  }
+
   NS.transform = {
+    sharedImageTransform,
     SCALE_MIN,
     SCALE_MAX,
     SCALE_HARD_MIN,
