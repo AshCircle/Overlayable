@@ -11,6 +11,11 @@ injected into the page's JavaScript context.
 For the backend's unchanged local profile, the development-only default key is
 `dev-only-change-me`; set `HONGGWART_ADMIN_API_KEY` to replace it.
 
+Backend URLs may include a port, such as `https://example.com:8443`. For a new host,
+the extension opens a permission page: click its allow button, approve Chrome's prompt,
+then return to geojson.io and click Connect again. Host permission covers all ports of
+that host; API requests retain the configured port. Use HTTPS for remote servers.
+
 Each layer is identified by a display name plus structured building code/name, floor code, and
 numeric floor order. Floor codes may be values such as `10`, `B1`, or `L`. Selecting a layer
 replaces geojson.io's current FeatureCollection and displays only that layer's shared overlay

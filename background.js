@@ -21,6 +21,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'OVERLAYABLE_CONFIGURE') {
       const configured = new URL(message.baseUrl);
       if (!['http:', 'https:'].includes(configured.protocol)) throw new Error('HTTP(S) 백엔드 URL이 필요합니다.');
+      if (configured.username || configured.password || configured.search || configured.hash) {
+        throw new Error('백엔드 URL에는 계정 정보, 쿼리 또는 fragment를 넣지 마세요.');
+      }
+      // Host permissions cover the host's ports; the actual API URL retains its port.
+      const pattern = `${configured.protocol}//${configured.hostname}/*`;
+      if (!await chrome.permissions.contains({ origins: [pattern] })) {
+        // A content-script message is not a reliable user gesture for permissions.request.
+        // Ask from a dedicated extension page's button instead. Never put the key in its URL.
+        await chrome.tabs.create({ url: chrome.runtime.getURL('permissions.html') + '#' + encodeURIComponent(configured.origin) });
+        throw new Error('열린 권한 화면에서 접근을 허용한 뒤, geojson.io로 돌아와 연결을 다시 누르세요.');
+      }
       await chrome.storage.local.set({ [localKey]: String(message.baseUrl).replace(/\/$/, '') });
       await chrome.storage.session.set({ [sessionKey]: message.apiKey || '' });
       sendResponse({ ok: true });
