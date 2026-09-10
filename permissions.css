@@ -1,0 +1,7 @@
+body { margin: 0; padding: 32px; font: 16px/1.7 system-ui, sans-serif; color: #202030; background: #f6f5fa; }
+main { max-width: 640px; margin: 48px auto; padding: 32px; background: white; border-radius: 16px; }
+h1 { font-size: 24px; }
+#server { font-weight: 700; overflow-wrap: anywhere; }
+#warning { color: #9c3f00; }
+button { padding: 12px 24px; border: 0; border-radius: 8px; background: #6741c7; color: white; font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
