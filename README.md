@@ -1,41 +1,11 @@
 # Overlayable
 
-층별 편집과 공동 작업 방법은 [한국어 사용 가이드](docs/USER_GUIDE.md)를 참고하세요.
-
-## HongGwart shared layers
-
-Open `https://geojson.io`, open the Overlayable panel, and enter the HongGwart backend URL
-(default `http://localhost:8080`) and the admin API key. The key is kept in
-`chrome.storage.session` and requests are made by the extension service worker, so it is never
-injected into the page's JavaScript context.
-For the backend's unchanged local profile, the development-only default key is
-`dev-only-change-me`; set `HONGGWART_ADMIN_API_KEY` to replace it.
-
-Backend URLs may include a port, such as `https://example.com:8443`. For a new host,
-the extension opens a permission page: click its allow button, approve Chrome's prompt,
-then return to geojson.io and click Connect again. Host permission covers all ports of
-that host; API requests retain the configured port. Use HTTPS for remote servers.
-
-Each layer is identified by a display name plus structured building code/name, floor code, and
-numeric floor order. Floor codes may be values such as `10`, `B1`, or `L`. Selecting a layer
-replaces geojson.io's current FeatureCollection and displays only that layer's shared overlay
-images. Local graph/image-transform edits are saved every 10 seconds. A layer switch first saves
-the current layer and is cancelled on network or revision conflict.
-
-Dragging either a Point or any endpoint/intermediate vertex of a LineString updates the same
-HongGwart node. The server returns a normalized snapshot so every Point and incident LineString
-is updated together. If two representations of one node are moved to different coordinates in
-the same edit, the save is rejected instead of choosing one silently.
-
-Layer copy duplicates graph nodes and internal edges with new identifiers; images and cross-floor
-connections are intentionally not copied. Shared images are stored in the backend. Layer deletion
-requires retyping the layer name and removes its graph, images, and cross-floor connections while
-retaining the symbolic building node.
-
-[geojson.io](https://geojson.io) 지도 위에 이미지를 오버레이로 띄우는 Manifest V3 크롬 익스텐션.
+[geojson.io](https://geojson.io) 지도 위에 도면 이미지를 띄우고, HongGwart와 층별 노드·간선·사진을 공유하는 Manifest V3 크롬 확장 프로그램입니다.
 지도를 드래그/확대축소/회전하면 **사진이 지도에 고정된 것처럼 함께 움직이고**, 필요할 때는 사진을
 직접 조작(이동/크기/회전/투명도)해 지도 위 원하는 위치에 다시 고정할 수 있습니다.
 빌드 도구·의존성 없이 Vanilla JS로 작성되었습니다.
+
+상세 작업 절차와 주의사항은 [한국어 사용 가이드](docs/USER_GUIDE.md)를 참고하세요.
 
 ## 설치 (압축해제된 확장 로드)
 
@@ -43,6 +13,46 @@ retaining the symbolic building node.
 2. 우측 상단 **개발자 모드** 켜기
 3. **압축해제된 확장 프로그램 로드** 클릭 → 이 프로젝트 폴더(`Overlayable/`) 선택
 4. <https://geojson.io> 접속 — 이 확장은 geojson.io 에서만 동작합니다
+
+## HongGwart 연결과 층별 작업
+
+**백엔드 연결 → 레이어 선택 → 사진 배치 → 점·선 편집 → 저장 상태 확인** 순서로 작업합니다.
+
+1. Chrome 툴바의 Overlayable 아이콘으로 패널을 열고 백엔드 주소와 관리자 API 키를 입력합니다.
+2. **연결**을 누릅니다. 새 외부 호스트라면 열린 권한 화면에서 접근을 허용하고 Chrome 요청을 승인한 뒤, geojson.io로 돌아와 **연결**을 다시 누릅니다.
+3. `연결됨 · 레이어를 선택하세요`가 표시되면 레이어를 선택하거나 생성합니다.
+4. 해당 층의 사진을 업로드하고 geojson.io에서 Point·LineString을 편집합니다. 마지막 변경의 저장 완료를 확인한 뒤 탭을 닫으세요.
+
+`http://example.com:8080`처럼 포트를 포함한 주소도 지원합니다. 호스트 권한은 해당 호스트의 모든 포트에 적용되지만 실제 요청은 입력한 포트로 전송됩니다. HTTP는 키와 데이터를 암호화하지 않으므로 원격 서버에는 HTTPS를 권장합니다.
+
+로컬 기본 주소는 `http://localhost:8080`입니다. 백엔드 `local` 프로필의 기본 키는 `dev-only-change-me`이며, `HONGGWART_ADMIN_API_KEY`로 변경할 수 있습니다. `dev`·`prod` 프로필에서는 키를 별도로 설정해야 합니다. 키는 `chrome.storage.session`에 보관하고 서비스 워커에서 요청하므로 페이지 JavaScript에 주입하지 않습니다. Chrome 재시작이나 확장 리로드 후에는 키 재입력이 필요할 수 있습니다.
+
+### 레이어와 동기화
+
+- 레이어 하나는 한 건물의 한 층입니다. 표시 이름은 자유롭게 지정하되 `T동 10층`처럼 통일하는 것을 권장합니다. 실제 DB 매핑은 이름이 아니라 별도 입력한 **건물 코드·층 코드**로 결정됩니다. 층 코드는 `10`, `B1`, `L` 등을 사용하고 정렬 순서는 정수로 지정합니다.
+- 레이어 선택 시 현재 GeoJSON과 사진 목록이 해당 레이어의 데이터로 교체됩니다. 연결 전에 편집한 GeoJSON은 자동으로 가져오지 않으므로 먼저 내보내세요.
+- 약 **10초마다** 변경을 저장하거나 서버의 최신 데이터를 가져옵니다. Point와 LineString의 끝점·중간 꼭짓점 이동 모두 동기화하며, 같은 노드를 공유하는 점과 선의 좌표도 맞춰집니다.
+- 레이어 전환 전에는 현재 변경을 저장합니다. 오류나 버전 충돌로 저장하지 못하면 전환을 중단합니다. 공동 편집은 자동 병합하지 않으므로 가급적 한 층은 한 명이 편집하세요.
+- **복사**는 새 ID를 가진 노드·내부 간선을 생성합니다. 사진과 층간 연결은 복사하지 않습니다. **이름 변경**만으로 실제 층 매핑이 바뀌지는 않습니다.
+- **레이어 삭제**는 이름 재입력이 필요하며 해당 노드·간선·사진·층간 연결을 삭제합니다. 건물 자체를 나타내는 노드는 남습니다.
+
+### 사진 보관과 백업
+
+레이어를 선택하고 올린 사진은 서버에 저장되며 그 레이어에서만 표시됩니다. 레이어를 선택하지 않으면 Chrome 로컬에만 저장되고 팀원에게 공유되지 않습니다.
+
+로컬 사진이 있는 상태에서 레이어를 선택하면 가져올지 묻습니다. 승인하면 사진 파일만 업로드하고 기존 배치는 이전하지 않습니다. **취소해도 레이어 전환은 진행되며 로컬 사진 목록이 교체됩니다.** 전환 전에 사진 영역 하단 **내보내기**로 백업하세요.
+
+상단 **GeoJSON 내보내기**는 점·선, 하단 **내보내기**는 사진·배치 상태를 저장합니다. 하단 **가져오기**는 로컬 사진 목록 병합이며 서버 업로드가 아닙니다. **원격 다시 불러오기**는 미저장 점·선·사진 편집을 서버 상태로 교체하므로 먼저 백업하세요.
+
+### 점·간선 연결과 삭제
+
+- 공유 레이어는 **Point와 LineString만** 지원합니다. 선이 화면에서 교차하는 것만으로는 연결되지 않습니다.
+- 아직 노드 ID가 없는 선 꼭짓점은 저장 시 같은 레이어의 **1m 이내 가장 가까운 노드 ID를 재사용**할 수 있습니다. 가까운 Point들을 일괄 삭제·병합하는 기능은 아닙니다. 연결할 Point를 먼저 저장하고 꼭짓점을 그 위치에 맞추세요.
+- 동일 노드의 좌표를 확정할 때 약 2cm 허용 오차를 사용합니다. Point와 선에서 같은 노드를 서로 다른 위치로 이동하면 저장이 거절될 수 있습니다.
+- Point 삭제 전에는 연결된 모든 선에서 해당 꼭짓점을 제거하거나 선을 삭제하고 저장하세요. 다른 층과의 연결도 먼저 제거해야 합니다. 현재 패널에는 층간 연결 삭제 버튼이 없어 관리자 처리가 필요합니다.
+- LineString 전체를 삭제하면 구성 간선은 삭제되지만 Point들은 남습니다. `A–B–C`에서 `B` 꼭짓점만 제거하면 `A–C`로 이어집니다. 특정 구간을 끊으려면 남길 경로를 별도 LineString으로 만드세요.
+
+삭제도 자동 동기화 대상입니다. 저장 완료 또는 오류 메시지를 반드시 확인하세요.
 
 ## 사용법
 
@@ -79,9 +89,11 @@ retaining the symbolic building node.
 
 ## 문제 해결
 
-**"지도 감지 대기 중"이 사라지지 않을 때** — 대부분 확장 리로드 문제입니다.
+연결 주소가 다른 입력란으로 이동할 때 이전 값으로 돌아오면, 키를 먼저 입력하고 주소를 마지막에 입력한 뒤 바로 **연결**을 누르세요. 연결 후 주소·포트를 확인하세요.
 
-1. `chrome://extensions` 에서 Overlayable 카드의 **↻(새로고침)** 버튼을 누르세요. manifest 가 바뀐 업데이트(예: 지도 연동이 추가된 0.2.x)는 **geojson.io 탭 새로고침만으로는 반영되지 않습니다.** 카드에 표시되는 버전이 이 저장소 `manifest.json` 의 버전과 같은지 확인하세요.
+**"지도 감지 대기 중"이 사라지지 않을 때** — 미저장 내용을 백업한 뒤 확장과 페이지를 다시 로드해 확인합니다.
+
+1. `chrome://extensions` 에서 Overlayable 카드의 **↻(새로고침)** 버튼을 누르세요. 확장 업데이트는 **geojson.io 탭 새로고침만으로는 반영되지 않을 수 있습니다.** 버전 번호가 같더라도 코드 변경 후에는 확장을 다시 로드하세요.
 2. geojson.io 탭을 새로고침한 뒤 개발자 도구(F12) 콘솔에서 `[Overlayable]` 로그를 확인하세요:
    - `브리지 로드됨 — geojson.io 지도 탐색 시작` — 브리지 주입 성공. **이 로그가 아예 없으면 1번(확장 리로드)이 누락된 것입니다.**
    - `지도 연동 성공 (경로: …)` — 정상 동작. 패널에도 `지도 연동됨` 이 표시됩니다.
@@ -91,18 +103,37 @@ retaining the symbolic building node.
 
 ```
 manifest.json     # MV3: geojson.io 전용 content_scripts (ISOLATED + MAIN world), action, background
-background.js     # 툴바 클릭 → 콘텐츠 스크립트에 토글 메시지
+background.js     # 패널 토글, 인증 세션, 백엔드 요청, 호스트 권한 확인
+permissions.html  # 외부 서버 접근 권한 요청 화면
+permissions.js    # 사용자 클릭에 따른 Chrome 권한 요청
+permissions.css   # 권한 화면 스타일
 src/
+  api.js          # 콘텐츠 스크립트 → 서비스 워커 API 클라이언트
+  storage.js      # 사진·작업공간 로컬 상태 저장
   transform.js    # 상태 → CSS transform 직렬화 + 클램프/회전 유틸
   geo.js          # 구면 메르카토르 project/unproject (지도 카메라 ↔ 화면 좌표)
-  bridge.js       # MAIN world: 지도 인스턴스 발견 + 카메라 postMessage 중계
+  bridge.js       # MAIN world: 지도 탐색, 카메라·GeoJSON·선택 상태 연동
   overlay.js      # 오버레이 DOM 생성 + 상태 반영 (극단 줌 렌더 가드 포함)
-  panel.js        # 플로팅 컨트롤 패널 (지도 연동 상태 표시)
-  content.js      # 진입점: 상태/키·모드/직접 상호작용/지도 동기화/메시지
+  panel.js        # 연결·레이어·Point·층간 연결·사진 편집 패널
+  content.js      # 편집 상태, 사진 조작, 레이어 전환·자동 동기화
   styles.css      # 스타일 (imgovl- prefix + !important 격리)
 icons/            # 16/48/128 아이콘 (scripts/gen-icons.mjs 로 생성)
 scripts/
   gen-icons.mjs   # 플레이스홀더 아이콘 생성기 (node scripts/gen-icons.mjs)
+tests/            # 브리지·호스트 권한·사진 변형 회귀 테스트
+docs/
+  USER_GUIDE.md   # 작업자용 상세 사용 가이드
 ```
 
-설계 배경과 수용 기준은 [.claude/PLAN.md](.claude/PLAN.md) 참고.
+## 개발 확인
+
+Node.js가 설치된 환경에서 회귀 테스트를 실행합니다. 확장 실행 자체에는 Node.js나 빌드 과정이 필요하지 않습니다.
+
+```sh
+node --test tests/*.test.cjs
+git diff --check
+```
+
+브라우저 확인 시에는 확장과 geojson.io를 다시 로드하고, 테스트용 레이어에서 Point·선 꼭짓점 이동, 레이어별 사진 분리, 두 탭 동기화를 확인하세요. 상세 확인 범위와 작업 종료 체크리스트는 [사용 가이드](docs/USER_GUIDE.md)에 있습니다.
+
+초기 설계 배경은 [.claude/PLAN.md](.claude/PLAN.md)를 참고하세요. 현재 사용 절차와 제약은 이 README와 사용 가이드를 기준으로 합니다.
