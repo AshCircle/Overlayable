@@ -11,11 +11,6 @@
     return response.data;
   }
   async function configure(baseUrl, apiKey) {
-    const origin = new URL(baseUrl).origin + '/*';
-    if (!origin.startsWith('http://localhost') && !origin.startsWith('http://127.0.0.1')) {
-      const granted = await chrome.permissions.request({ origins: [origin] });
-      if (!granted) throw new Error('백엔드 호스트 접근 권한이 필요합니다.');
-    }
     const response = await chrome.runtime.sendMessage({ type: 'OVERLAYABLE_CONFIGURE', baseUrl, apiKey });
     if (!response?.ok) throw new Error(response?.error || '연결 설정을 저장하지 못했습니다.');
   }
