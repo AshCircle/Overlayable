@@ -137,3 +137,7 @@ git diff --check
 브라우저 확인 시에는 확장과 geojson.io를 다시 로드하고, 테스트용 레이어에서 Point·선 꼭짓점 이동, 레이어별 사진 분리, 두 탭 동기화를 확인하세요. 상세 확인 범위와 작업 종료 체크리스트는 [사용 가이드](docs/USER_GUIDE.md)에 있습니다.
 
 초기 설계 배경은 [.claude/PLAN.md](.claude/PLAN.md)를 참고하세요. 현재 사용 절차와 제약은 이 README와 사용 가이드를 기준으로 합니다.
+
+## 참고 문서
+
+- [추가 참고 문서 (Claude Artifact)](https://claude.ai/code/artifact/90904ace-8caa-43b4-a7d0-955af3472e49)
