@@ -64,17 +64,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       headers.set('Content-Type', 'application/json');
       body = JSON.stringify(message.body);
     }
-    const response = await fetch(url, { method: message.method || 'GET', headers, body });
-    const contentType = response.headers.get('content-type') || '';
-    let data;
-    if (message.responseType === 'base64') {
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte);
-      data = btoa(binary);
-    } else if (contentType.includes('json')) data = await response.json();
-    else data = await response.text();
-    sendResponse({ ok: response.ok, status: response.status, data,
-      etag: response.headers.get('etag'), contentType });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(url, { method: message.method || 'GET', headers, body, signal: controller.signal });
+      const contentType = response.headers.get('content-type') || '';
+      let data;
+      if (message.responseType === 'base64') {
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        // Chunk conversion avoids allocating a linked string per byte for large floor plans.
+        const chunks = [];
+        for (let i = 0; i < bytes.length; i += 0x8000) chunks.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
+        data = btoa(chunks.join(''));
+      } else if (contentType.includes('json')) data = await response.json();
+      else data = await response.text();
+      sendResponse({ ok: response.ok, status: response.status, data,
+        etag: response.headers.get('etag'), contentType });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        const writing = message.method && !['GET', 'HEAD'].includes(message.method);
+        throw new Error('서버 응답 시간이 초과되었습니다(20초).' + (writing
+          ? ' 저장이 서버에서 처리되었을 수 있습니다. 로컬 데이터를 내보낸 뒤 원격 상태를 확인하세요.'
+          : ' 연결 상태를 확인한 뒤 다시 시도하세요.'));
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   })().catch((error) => sendResponse({ ok: false, status: 0, error: error.message }));
   return true;
 });

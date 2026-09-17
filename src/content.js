@@ -34,6 +34,7 @@
     workspace: {
       baseUrl: 'http://localhost:8080', layers: [], layerId: null, revision: null,
       status: '백엔드 연결 필요', error: false, selectedFeature: null,
+      pendingLayerId: null, switchPhase: '',
     },
   };
 
@@ -97,6 +98,7 @@
 
   // 선택된 사진이 있을 때만 변형을 적용하고 반영. 수동 변경이므로 새 값으로 지도에 재고정.
   function withSelected(fn) {
+    if (state.workspace.pendingLayerId != null) return;
     const p = getSelected();
     if (!p) return;
     fn(p);
@@ -173,6 +175,7 @@
   // 영속화·공유를 위해 objectURL 대신 base64 data URL 을 src 의 단일 표현으로 쓴다.
   // FileReader 로 바이트를 읽는 동안 src 는 빈 문자열이고, 완료되면 채워져 표시된다.
   function addPhoto(file) {
+    if (state.workspace.pendingLayerId != null) return;
     const photo = {
       id: state.nextId++,
       uid: crypto.randomUUID(), // import 병합 시 중복 식별용 안정 id
@@ -194,7 +197,7 @@
 
     const reader = new FileReader();
     reader.onload = () => {
-      if (!getPhoto(photo.id)) return; // 읽는 도중 삭제된 경우
+      if (getPhoto(photo.id) !== photo) return; // 읽는 도중 삭제되거나 층이 바뀐 경우
       photo.src = String(reader.result || '');
       applyState(); // src 채워짐 → 프레임 표시 + 저장 예약
       if (state.workspace.layerId != null) queueWorkspaceImageMutation(() => uploadWorkspacePhoto(file, photo));
@@ -206,6 +209,7 @@
   }
 
   function removePhoto(id) {
+    if (state.workspace.pendingLayerId != null) return;
     const p = getPhoto(id);
     if (!p) return;
     if (state.workspace.layerId != null && p.remoteId) queueWorkspaceImageMutation(() => deleteWorkspacePhoto(p));
@@ -338,6 +342,7 @@
 
   // ---- 모드 전환 (MODE_KEY 홀드: macOS=Command, 그 외=Ctrl) ----
   function setMode(mode) {
+    if (mode === 'image' && state.workspace.pendingLayerId != null) return;
     if (state.mode === mode) return;
     state.mode = mode;
     // image 모드를 벗어나면 잔존 제스처를 즉시 종료(다음 mousemove까지 미루지 않음).
@@ -604,6 +609,7 @@
 
   // 파일 텍스트를 파싱해 기존 오버레이에 병합(additive)한다. uid 가 같으면 중복으로 보고 건너뛴다.
   function importState(text) {
+    if (state.workspace.pendingLayerId != null) return;
     let records;
     try {
       records = NS.storage.parseImport(text);
@@ -647,11 +653,17 @@
 
   // ---- HongGwart layer workspace ----
   let workspaceBusy = false;
+  let layerSwitchInFlight = null;
   let syncInFlight = null;
   let imageMutationQueue = Promise.resolve();
   let imageMutationBusy = false;
+  let imageMutationError = null;
   let baselineHash = null;
   let syncTimer = null;
+  // Session-only LRU, bounded by encoded string length. Never reuse unversioned content.
+  const imageCache = new Map();
+  const IMAGE_CACHE_LIMIT = 32 * 1024 * 1024;
+  let imageCacheSize = 0;
 
   function setWorkspaceStatus(status, error = false) {
     state.workspace.status = status; state.workspace.error = error; panelApi.sync(state);
@@ -666,7 +678,7 @@
 
   function queueWorkspaceImageMutation(operation) {
     imageMutationQueue=imageMutationQueue.then(async()=>{imageMutationBusy=true;try{return await operation();}finally{imageMutationBusy=false;}})
-      .catch((error)=>{showWorkspaceError(error);});
+      .catch((error)=>{imageMutationError=error;showWorkspaceError(error);});
     return imageMutationQueue;
   }
 
@@ -691,9 +703,11 @@
   }
 
   async function reloadCurrentLayer() {
+    if (workspaceBusy) return;
     if(state.workspace.layerId==null) return;
     try { const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
-      await applyRemoteSnapshot(response.data); setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
+      await applyRemoteSnapshot(response.data); imageMutationError=null;
+      setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
     } catch(error){ showWorkspaceError(error); }
   }
 
@@ -709,6 +723,7 @@
   }
 
   async function connectWorkspace(url, key) {
+    if (workspaceBusy) return;
     try {
       setWorkspaceStatus('연결 중…'); await NS.api.configure(url || 'http://localhost:8080', key || '');
       state.workspace.baseUrl = (url || 'http://localhost:8080').replace(/\/$/, '');
@@ -722,6 +737,7 @@
   }
 
   async function createLayer(request) {
+    if (workspaceBusy) return;
     try {
       const response = await NS.api.request('/api/admin/layers', { method: 'POST', body: request });
       await refreshLayers(); await selectLayer(response.data.id);
@@ -729,6 +745,7 @@
   }
 
   async function renameLayer(name) {
+    if (workspaceBusy) return;
     if (state.workspace.layerId == null) return;
     try {
       const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/name`, { method:'PUT',
@@ -738,6 +755,7 @@
   }
 
   async function copyLayer(request) {
+    if (workspaceBusy) return;
     if (state.workspace.layerId == null) return;
     try {
       await syncNow(true);
@@ -748,6 +766,7 @@
   }
 
   async function deleteLayer(confirmationName) {
+    if (workspaceBusy) return;
     if (state.workspace.layerId == null) return;
     try {
       await NS.api.request(`/api/admin/layers/${state.workspace.layerId}`, {method:'DELETE',
@@ -759,36 +778,105 @@
     } catch(error){ showWorkspaceError(error); }
   }
 
-  async function selectLayer(id) {
-    if (workspaceBusy || id === state.workspace.layerId) return;
-    const legacyPhotos = state.workspace.layerId == null ? state.photos.filter((p)=>!p.remoteId && p.src?.startsWith('data:')) : [];
-    const importLegacy = legacyPhotos.length > 0 && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
-    try {
-      // A failed/conflicting flush deliberately prevents the layer switch.
-      if(state.workspace.layerId != null) await syncNow(true);
-      workspaceBusy=true;
-      const response=await NS.api.request(`/api/admin/layers/${id}/snapshot`);
-      await applyRemoteSnapshot(response.data);
-      if(importLegacy) {
-        for(const photo of legacyPhotos) await uploadLegacyPhoto(photo);
-        const updated=await NS.api.request(`/api/admin/layers/${id}/snapshot`);
-        await applyRemoteSnapshot(updated.data);
-      }
-      setWorkspaceStatus(`동기화됨 · revision ${response.data.revision}`);
-    } catch(error){ showWorkspaceError(error); }
-    finally { workspaceBusy=false; }
+  function selectLayer(id) {
+    if (!layerSwitchInFlight && id === state.workspace.layerId) return Promise.resolve();
+    state.workspace.pendingLayerId = id;
+    panelApi.sync(state);
+    if (layerSwitchInFlight) return layerSwitchInFlight;
+    // Lock before the first await: autosync and repeated clicks cannot start a second switch.
+    workspaceBusy = true;
+    setMode('web');
+    layerSwitchInFlight = switchToPendingLayer().catch(showWorkspaceError).finally(() => {
+      workspaceBusy = false;
+      layerSwitchInFlight = null;
+      state.workspace.pendingLayerId = null;
+      state.workspace.switchPhase = '';
+      panelApi.sync(state);
+    });
+    return layerSwitchInFlight;
   }
 
-  async function applyRemoteSnapshot(snapshot) {
-    const editorGeoJSON=await bridge('geojson-replace',{geojson:snapshot.geojson});
-    const loaded=await Promise.all((snapshot.images||[]).map(async(meta,index)=>{
-      const content=await NS.api.request(meta.contentUrl,{responseType:'base64'});
+  async function flushBeforeSwitch() {
+    state.workspace.switchPhase = '현재 층 저장 확인 중…';
+    panelApi.sync(state);
+    await imageMutationQueue;
+    if (imageMutationError) throw imageMutationError;
+    if (state.workspace.layerId != null) await syncNow(true, { flushOnly: true });
+  }
+
+  async function switchToPendingLayer() {
+    const legacyPhotos = state.workspace.layerId == null ? state.photos.filter((p)=>!p.remoteId && p.src?.startsWith('data:')) : [];
+    let importLegacy = legacyPhotos.length > 0 && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
+    await flushBeforeSwitch();
+    while (state.workspace.pendingLayerId !== state.workspace.layerId) {
+      const id = state.workspace.pendingLayerId;
+      state.workspace.switchPhase = '도면 불러오는 중…';
+      panelApi.sync(state);
+      let snapshot, loaded;
+      try {
+        snapshot = (await NS.api.request(`/api/admin/layers/${id}/snapshot`)).data;
+        if (id !== state.workspace.pendingLayerId) continue;
+        loaded = await loadSnapshotImages(snapshot);
+      } catch (error) {
+        // A failed obsolete request must not discard the user's newer selection.
+        if (id !== state.workspace.pendingLayerId) continue;
+        throw error;
+      }
+      if (id !== state.workspace.pendingLayerId) continue;
+      // The map remains editable while downloading; flush edits made during that wait too.
+      await flushBeforeSwitch();
+      if (id !== state.workspace.pendingLayerId) continue;
+      state.workspace.switchPhase = '지도에 적용 중…';
+      panelApi.sync(state);
+      await applyRemoteSnapshot(snapshot, loaded);
+      if (importLegacy) {
+        importLegacy = false;
+        for (const photo of legacyPhotos) await uploadLegacyPhoto(photo);
+        const updated = await NS.api.request(`/api/admin/layers/${id}/snapshot`);
+        await applyRemoteSnapshot(updated.data);
+      }
+    }
+    setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
+  }
+
+  async function imageSource(meta) {
+    const key = meta.contentHash && JSON.stringify([state.workspace.baseUrl, meta.contentUrl, meta.contentHash, meta.contentType]);
+    if (key && imageCache.has(key)) {
+      const src = imageCache.get(key);
+      imageCache.delete(key); imageCache.set(key, src);
+      return src;
+    }
+    const content = await NS.api.request(meta.contentUrl, { responseType: 'base64' });
+    const src = `data:${meta.contentType};base64,${content.data}`;
+    if (key && src.length <= IMAGE_CACHE_LIMIT) {
+      while (imageCacheSize + src.length > IMAGE_CACHE_LIMIT) {
+        const oldest = imageCache.keys().next().value;
+        imageCacheSize -= imageCache.get(oldest).length;
+        imageCache.delete(oldest);
+      }
+      // Parallel references to the same image may finish together.
+      if (imageCache.has(key)) imageCacheSize -= imageCache.get(key).length;
+      imageCache.set(key, src); imageCacheSize += src.length;
+    }
+    return src;
+  }
+
+  async function loadSnapshotImages(snapshot) {
+    return Promise.all((snapshot.images||[]).map(async(meta,index)=>{
+      const src = await imageSource(meta);
       return { id:index+1, uid:meta.id, remoteId:meta.id, name:meta.name,
-        src:`data:${meta.contentType};base64,${content.data}`, x:meta.x, y:meta.y,
+        src, x:meta.x, y:meta.y,
         scale:meta.scale, rotation:meta.rotation, opacity:meta.opacity,
         naturalW:meta.naturalWidth, naturalH:meta.naturalHeight,
         geo:meta.geo && Object.keys(meta.geo).length ? meta.geo : null };
     }));
+  }
+
+  async function applyRemoteSnapshot(snapshot, loaded, expectedHash) {
+    // Prepare all fallible network reads before replacing the currently displayed graph.
+    if (!loaded) loaded = await loadSnapshotImages(snapshot);
+    if (expectedHash != null && canonicalHash(await bridge('geojson-read')) !== expectedHash) return false;
+    const editorGeoJSON=await bridge('geojson-replace',{geojson:snapshot.geojson});
     restoring=true;
     state.photos=loaded; state.nextId=loaded.length+1; state.selectedId=loaded.length?loaded[loaded.length-1].id:null;
     state.workspace.layerId=snapshot.layerId; state.workspace.revision=snapshot.revision;
@@ -799,38 +887,57 @@
     baselineHash=canonicalHash(editorGeoJSON || snapshot.geojson,
       (snapshot.images||[]).map((m)=>({id:m.id,opacity:m.opacity,scale:m.scale,rotation:m.rotation,x:m.x,y:m.y,
         naturalWidth:m.naturalWidth,naturalHeight:m.naturalHeight,geo:m.geo||{}})));
+    return true;
   }
 
-  async function syncNow(force = false) {
+  async function syncNow(force = false, { flushOnly = false } = {}) {
     if(((workspaceBusy || imageMutationBusy) && !force) || state.workspace.layerId == null) return;
-    if(syncInFlight) return syncInFlight;
-    syncInFlight=(async()=>{
-    const geojson=await bridge('geojson-read');
-    const localHash=canonicalHash(geojson);
-    if(localHash !== baselineHash) {
-      setWorkspaceStatus('저장 중…');
-      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`, {method:'PUT',
-        body:{expectedRevision:state.workspace.revision,geojson,images:transformPayload()}});
-      // Always apply normalized server output: Point moves propagate into every
-      // incident LineString, and a dragged LineString vertex propagates to Point.
-      await applyRemoteSnapshot(response.data);
-      setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
-    } else {
-      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
-      if(response.data.revision > state.workspace.revision) {
-        await applyRemoteSnapshot(response.data); setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
-      } else setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
+    if (syncInFlight) {
+      await syncInFlight;
+      if (!flushOnly) return;
+      // Re-read after an existing sync, so edits made while it ran are not skipped.
     }
+    syncInFlight = (async () => {
+      do {
+        const geojson = await bridge('geojson-read');
+        const localHash = canonicalHash(geojson);
+        if (localHash !== baselineHash) {
+          setWorkspaceStatus('저장 중…');
+          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`, {
+            method: 'PUT',
+            body: { expectedRevision: state.workspace.revision, geojson, images: transformPayload() },
+          });
+          // Apply normalized node/edge coordinates only if the saved version is still current.
+          if (!await applyRemoteSnapshot(response.data, undefined, localHash)) {
+            state.workspace.revision = response.data.revision;
+            baselineHash = localHash;
+            setWorkspaceStatus('추가 변경 저장 대기…');
+            if (flushOnly) continue;
+            return;
+          }
+          setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
+        } else if (!flushOnly) {
+          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
+          if (response.data.revision > state.workspace.revision) {
+            if (await applyRemoteSnapshot(response.data, undefined, localHash)) {
+              setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
+            }
+          } else setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
+        }
+        return;
+      } while (flushOnly);
     })();
-    try { return await syncInFlight; } finally { syncInFlight=null; }
+    try { return await syncInFlight; } finally { syncInFlight = null; }
   }
 
   async function patchSelectedFeature(properties) {
+    if (workspaceBusy) return;
     try { await bridge('geojson-patch-selected',{properties}); await syncNow(); }
     catch(error){ showWorkspaceError(error); }
   }
 
   async function verticalConnectFlow() {
+    if (workspaceBusy) return;
     if(state.workspace.layerId==null) return;
     try {
       await syncNow(true);
@@ -859,13 +966,11 @@
   }
 
   async function uploadWorkspacePhoto(file, photo) {
-    try {
-      const base64=photo.src.slice(photo.src.indexOf(',')+1);
-      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
-        {method:'POST',bodyType:'image-form',body:{base64,name:file.name||'image',contentType:file.type||'application/octet-stream'}});
-      photo.remoteId=response.data.id; photo.uid=response.data.id; state.workspace.revision += 1; baselineHash=null;
-      await syncNow(true);
-    } catch(error){ showWorkspaceError(error); }
+    const base64=photo.src.slice(photo.src.indexOf(',')+1);
+    const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
+      {method:'POST',bodyType:'image-form',body:{base64,name:file.name||'image',contentType:file.type||'application/octet-stream'}});
+    photo.remoteId=response.data.id; photo.uid=response.data.id; state.workspace.revision += 1; baselineHash=null;
+    await syncNow(true);
   }
 
   async function uploadLegacyPhoto(photo) {
