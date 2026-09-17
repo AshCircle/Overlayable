@@ -8,7 +8,7 @@ function worker(granted) {
   const local = {}, session = {}, opened = [], patterns = [], requests = [];
   const storage = (data) => ({ get: async () => data, set: async (x) => Object.assign(data, x) });
   vm.runInNewContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), {
-    URL, Headers,
+    URL, Headers, AbortController, setTimeout, clearTimeout,
     chrome: {
       action: { onClicked: { addListener() {} } },
       runtime: { onMessage: { addListener(fn) { listener = fn; } }, getURL: (p) => `chrome-extension://test/${p}` },

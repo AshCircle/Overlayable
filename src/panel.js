@@ -45,6 +45,7 @@
     const apiKey = el('input', { class: 'imgovl-text', type: 'password', placeholder: 'Admin API key' });
     const connectBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '연결' });
     const layerSelect = el('select', { class: 'imgovl-text imgovl-layer-select' });
+    let renderedLayerValue;
     layerSelect.appendChild(el('option', { value: '', text: '레이어 선택…' }));
     const newLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '새 레이어' });
     const copyLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '복사' });
@@ -54,6 +55,7 @@
     const reloadLayerBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '원격 다시 불러오기' });
     const verticalBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '층 연결' });
     const syncStatus = el('div', { class: 'imgovl-sync-status', text: '백엔드 연결 필요' });
+    syncStatus.setAttribute('role', 'status');
     const featureName = el('input', { class: 'imgovl-text', type: 'text', placeholder: '선택 Point 이름' });
     const featureType = el('select', { class: 'imgovl-text' });
     ['WAYPOINT','JUNCTION','ENTRANCE','VERTICAL_LINK','POI'].forEach((v) => featureType.appendChild(el('option',{value:v,text:v})));
@@ -76,7 +78,10 @@
     ]);
 
     connectBtn.addEventListener('click', () => handlers.onConnect(backendUrl.value, apiKey.value));
-    layerSelect.addEventListener('change', () => { if (layerSelect.value) handlers.onLayerSelect(Number(layerSelect.value)); });
+    layerSelect.addEventListener('change', () => {
+      if (layerSelect.value) handlers.onLayerSelect(Number(layerSelect.value));
+      else layerSelect.value = renderedLayerValue || '';
+    });
     function layerFields(prefix) {
       const name = prompt(`${prefix} 레이어 이름`); if (!name) return null;
       const buildingCode = prompt('건물 코드 (예: T, C)'); if (!buildingCode) return null;
@@ -325,7 +330,8 @@
         entry.label.textContent = name;
         entry.label.title = name;
         entry.item.classList.toggle('imgovl-selected', p.id === state.selectedId);
-        photoList.appendChild(entry.item); // 순서 유지(역순)
+        const want = photoList.children[idx];
+        if (want !== entry.item) photoList.insertBefore(entry.item, want || null);
       });
 
       photoList.classList.toggle('imgovl-empty', photos.length === 0);
@@ -371,16 +377,32 @@
       for (const layer of ws.layers || []) {
         const value=String(layer.id); let option=existing.get(value);
         if(!option){ option=el('option',{value}); layerSelect.appendChild(option); }
-        option.textContent=`${layer.name} (${layer.buildingCode} ${layer.floor})`; existing.delete(value);
+        const label = `${layer.name} (${layer.buildingCode} ${layer.floor})`;
+        if (option.textContent !== label) option.textContent = label;
+        existing.delete(value);
       }
       existing.delete(''); for(const option of existing.values()) option.remove();
-      layerSelect.value = ws.layerId == null ? '' : String(ws.layerId);
-      syncStatus.textContent = ws.status || '백엔드 연결 필요';
-      syncStatus.className = 'imgovl-sync-status ' + (ws.error ? 'imgovl-sync-error' : '');
+      const switching = ws.pendingLayerId != null;
+      const layerValue = switching ? String(ws.pendingLayerId) : ws.layerId == null ? '' : String(ws.layerId);
+      // Do not reset the native select while it is open, or during periodic bridge updates.
+      if (renderedLayerValue !== layerValue) {
+        if (layerSelect.value !== layerValue) layerSelect.value = layerValue;
+        renderedLayerValue = layerValue;
+      }
+      const target = (ws.layers || []).find((layer) => layer.id === ws.pendingLayerId);
+      syncStatus.textContent = switching
+        ? `${target?.name || '레이어'} 전환 중 · ${ws.switchPhase || '준비 중…'}`
+        : ws.status || '백엔드 연결 필요';
+      syncStatus.className = 'imgovl-sync-status ' + (ws.error && !switching ? 'imgovl-sync-error' : '');
+      layerSelect.setAttribute('aria-busy', String(switching));
+      for (const control of [backendUrl, apiKey, connectBtn, newLayerBtn, copyLayerBtn, renameLayerBtn,
+        deleteLayerBtn, reloadLayerBtn, verticalBtn, featureName, featureType, featureSearchable,
+        featureRoom, fileInput, importBtn, importInput, opacity.slider, scale.slider, scaleMinus, scalePlus,
+        rotation.slider, rotMinus, rotPlus, resetBtn, removeBtn]) control.disabled = switching;
       const sf = ws.selectedFeature;
       const point = sf && sf.geometry && sf.geometry.type === 'Point';
       workspace.classList.toggle('imgovl-no-point', !point);
-      featureSave.disabled = !point;
+      featureSave.disabled = switching || !point;
       if (!point) {
         featureMeta.textContent = 'Point를 선택하세요';
         featureName.value = ''; featureType.value = 'WAYPOINT';
