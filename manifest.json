@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Overlayable",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "geojson.io 지도 위에 이미지를 오버레이로 띄우고, 지도 이동/확대/회전에 맞춰 함께 움직입니다. 투명도/확대축소/회전 조절과 웹·이미지 조작 모드 전환을 지원합니다.",
   "minimum_chrome_version": "111",
   "action": {
@@ -25,6 +25,8 @@
         "src/transform.js",
         "src/geo.js",
         "src/overlay.js",
+        "src/workspace.js",
+        "src/workspace-panel.js",
         "src/panel.js",
         "src/storage.js",
         "src/api.js",

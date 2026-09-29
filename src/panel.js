@@ -56,6 +56,7 @@
     const verticalBtn = el('button', { class: 'imgovl-action-btn', type: 'button', text: '층 연결' });
     const syncStatus = el('div', { class: 'imgovl-sync-status', text: '백엔드 연결 필요' });
     syncStatus.setAttribute('role', 'status');
+    const ownershipSummary = el('div', { class: 'imgovl-hint imgovl-ownership-summary' });
     const featureName = el('input', { class: 'imgovl-text', type: 'text', placeholder: '선택 Point 이름' });
     const featureType = el('select', { class: 'imgovl-text' });
     ['WAYPOINT','JUNCTION','ENTRANCE','VERTICAL_LINK','POI'].forEach((v) => featureType.appendChild(el('option',{value:v,text:v})));
@@ -63,13 +64,14 @@
     const featureRoom = el('input', { class: 'imgovl-text', type: 'text', placeholder: '호실 번호' });
     const featureMeta = el('div', { class: 'imgovl-sync-status', text: 'Point를 선택하세요' });
     const featureSave = el('button', { class: 'imgovl-action-btn', type: 'button', text: '선택 Point 반영' });
+    const advanced = NS.workspacePanel.create(handlers);
     const workspace = el('section', { class: 'imgovl-workspace' }, [
       el('div', { class: 'imgovl-section-title', text: 'HongGwart 공유 레이어' }),
       backendUrl, apiKey, connectBtn, layerSelect,
       el('div', { class: 'imgovl-actions' }, [newLayerBtn, copyLayerBtn]),
       el('div', { class: 'imgovl-actions' }, [renameLayerBtn, deleteLayerBtn, verticalBtn]),
       el('div', { class: 'imgovl-actions' }, [geojsonExportBtn, reloadLayerBtn]),
-      syncStatus,
+      syncStatus, ownershipSummary, advanced.root,
       el('div', { class: 'imgovl-feature-editor' }, [
         el('div', { class: 'imgovl-section-title', text: '선택 Point' }), featureMeta, featureName, featureType,
         el('label', { class: 'imgovl-check-label' }, [featureSearchable, document.createTextNode(' 검색 가능')]),
@@ -84,12 +86,16 @@
     });
     function layerFields(prefix) {
       const name = prompt(`${prefix} 레이어 이름`); if (!name) return null;
+      const kind = prefix === '새' ? prompt('레이어 종류: FLOOR_PLAN (도면) 또는 SHARED_PATHS (공용 경로)', 'FLOOR_PLAN') : 'FLOOR_PLAN';
+      if (!kind) return null;
+      if (kind === 'SHARED_PATHS') return { name, kind };
+      if (kind !== 'FLOOR_PLAN') { alert('FLOOR_PLAN 또는 SHARED_PATHS를 입력하세요.'); return null; }
       const buildingCode = prompt('건물 코드 (예: T, C)'); if (!buildingCode) return null;
       const buildingName = prompt('건물 이름 (예: T동)'); if (!buildingName) return null;
       const floor = prompt('층 코드 (예: 10, B1, L)'); if (!floor) return null;
       const floorOrder = Number(prompt('층 정렬 순서 (예: B1=-1, L=0, 10=10)', '0'));
       if (!Number.isInteger(floorOrder)) { alert('층 정렬 순서는 정수여야 합니다.'); return null; }
-      return { name, buildingCode, buildingName, floor, floorOrder };
+      return { name, kind, buildingCode, buildingName, floor, floorOrder };
     }
     newLayerBtn.addEventListener('click', () => { const x=layerFields('새'); if(x) handlers.onLayerCreate(x); });
     copyLayerBtn.addEventListener('click', () => { const x=layerFields('복사할'); if(x) handlers.onLayerCopy(x); });
@@ -377,7 +383,7 @@
       for (const layer of ws.layers || []) {
         const value=String(layer.id); let option=existing.get(value);
         if(!option){ option=el('option',{value}); layerSelect.appendChild(option); }
-        const label = `${layer.name} (${layer.buildingCode} ${layer.floor})`;
+        const label = layer.kind === 'SHARED_PATHS' ? `${layer.name} (공용 경로)` : `${layer.name} (${(layer.locations || []).length > 1 ? '복합 도면' : `${layer.buildingCode} ${layer.floor}`})`;
         if (option.textContent !== label) option.textContent = label;
         existing.delete(value);
       }
@@ -395,14 +401,15 @@
         : ws.status || '백엔드 연결 필요';
       syncStatus.className = 'imgovl-sync-status ' + (ws.error && !switching ? 'imgovl-sync-error' : '');
       layerSelect.setAttribute('aria-busy', String(switching));
+      layerSelect.disabled = !!ws.operationBusy;
       for (const control of [backendUrl, apiKey, connectBtn, newLayerBtn, copyLayerBtn, renameLayerBtn,
         deleteLayerBtn, reloadLayerBtn, verticalBtn, featureName, featureType, featureSearchable,
         featureRoom, fileInput, importBtn, importInput, opacity.slider, scale.slider, scaleMinus, scalePlus,
-        rotation.slider, rotMinus, rotPlus, resetBtn, removeBtn]) control.disabled = switching;
+        rotation.slider, rotMinus, rotPlus, resetBtn, removeBtn]) control.disabled = switching || !!ws.operationBusy;
       const sf = ws.selectedFeature;
-      const point = sf && sf.geometry && sf.geometry.type === 'Point';
+      const point = sf && sf.geometry && sf.geometry.type === 'Point' && (ws.selectedFeatures || [sf]).length === 1;
       workspace.classList.toggle('imgovl-no-point', !point);
-      featureSave.disabled = switching || !point;
+      featureSave.disabled = switching || !!ws.operationBusy || !point;
       if (!point) {
         featureMeta.textContent = 'Point를 선택하세요';
         featureName.value = ''; featureType.value = 'WAYPOINT';
@@ -412,6 +419,24 @@
         featureSearchable.checked=!!p.searchable; featureRoom.value=p.roomNumber||'';
         featureMeta.textContent = p.overlayable?.nodeId ? `Node #${p.overlayable.nodeId}` : '저장 후 Node ID가 부여됩니다';
       }
+      const activeLayer = ws.layers?.find((layer) => layer.id === ws.layerId);
+      const sharedPaths = activeLayer?.kind === 'SHARED_PATHS';
+      const selectedPoints = (ws.selectedFeatures || []).filter((feature) => feature.geometry?.type === 'Point');
+      const allowed = NS.workspace.locations(activeLayer);
+      const ownershipLabels = [...new Set(selectedPoints.map((feature) => {
+        const location = feature.properties?.location || ws.defaultLocation;
+        const named = allowed.find((value) => NS.workspace.locationKey(value) === NS.workspace.locationKey(location)) || location;
+        return NS.workspace.locationLabel(named);
+      }))];
+      ownershipSummary.textContent = selectedPoints.length
+        ? `선택 Point ${selectedPoints.length}개 · ${ownershipLabels.slice(0, 3).join(' / ')}${ownershipLabels.length > 3 ? ` 외 ${ownershipLabels.length - 3}개 소속` : ''}`
+        : activeLayer ? `새 노드 소속: ${NS.workspace.locationLabel(allowed.find((value) => NS.workspace.locationKey(value) === NS.workspace.locationKey(ws.defaultLocation)) || ws.defaultLocation)}` : '';
+
+      for (const control of [fileInput, importBtn, importInput]) control.disabled = switching || !!ws.operationBusy || sharedPaths;
+      dropzone.setAttribute('aria-disabled', String(switching || !!ws.operationBusy || sharedPaths));
+      dropzone.classList.toggle('imgovl-upload-disabled', sharedPaths);
+      copyLayerBtn.disabled = switching || !!ws.operationBusy || !activeLayer || activeLayer.requiresProtocolV2 || activeLayer.kind === 'SHARED_PATHS' || (activeLayer.locations || []).length > 1;
+      advanced.sync(state);
       verticalBtn.textContent = ws.connectionDraft ? '이 Point에 층 연결 완료' : '선택 Point에서 층 연결 시작';
     }
 

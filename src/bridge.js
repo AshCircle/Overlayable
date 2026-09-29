@@ -32,6 +32,12 @@
   let editorData = null;
   let editorDataSource = null;
   let editorTimer = null;
+  let referenceGeoJSON = { type: 'FeatureCollection', features: [] };
+  const REFERENCE_SOURCE = 'overlayable-reference-nodes';
+  const REFERENCE_LAYER = 'overlayable-reference-nodes-circle';
+  const REFERENCE_LINE = 'overlayable-reference-edges-line';
+  let referenceErrorReported = false;
+  let referenceKey = '', renderedReferenceKey = '', renderedReferenceSource = null;
 
   // 빠른 폴링(250ms × 40회 = 10초) → 실패 시 경고 1회 → 2초 간격으로 영구 재시도(SPA 늦은 마운트 대비).
   const FAST_MS = 250;
@@ -245,17 +251,24 @@
   }
 
   function selectedFeature() {
-    if (!editor) return null;
+    return selectedFeatures()[0] || null;
+  }
+
+  function selectedFeatures() {
+    if (!editor) return [];
     const selection = editor.data.selection;
-    const id = selection && (selection.id || (selection.ids && selection.ids[0]));
-    const wrapped = id && editor.data.featureMap.get(id);
-    return wrapped ? wrapped.feature : null;
+    const ids = selection?.ids || (selection?.id ? [selection.id] : []);
+    return ids.map((id) => {
+      const wrapped = editor.data.featureMap.get(id);
+      if (!wrapped?.feature) return null;
+      return wrapped.feature.id != null ? wrapped.feature : { ...wrapped.feature, id: wrapped.id ?? id };
+    }).filter(Boolean);
   }
 
   function postGeoJSON(requestId) {
     const geojson = featureCollection();
     window.postMessage({ source: 'overlayable-bridge', type: 'geojson-state', requestId,
-      ready: !!geojson, geojson, selectedFeature: selectedFeature() }, location.origin);
+      ready: !!geojson, geojson, selectedFeature: selectedFeature(), selectedFeatures: selectedFeatures() }, location.origin);
   }
 
   async function replaceGeoJSON(geojson, requestId) {
@@ -280,10 +293,56 @@
     const selection = editor.data.selection;
     const id = selection && (selection.id || (selection.ids && selection.ids[0]));
     const wrapped = id && editor.data.featureMap.get(id);
-    if (!wrapped || wrapped.feature.geometry?.type !== 'Point') throw new Error('Point 하나를 선택하세요.');
+    if (selectedFeatures().length !== 1 || !wrapped || !['Point', 'LineString'].includes(wrapped.feature.geometry?.type)) {
+      throw new Error('Point 또는 선 하나를 선택하세요.');
+    }
     await editor.persistence.useTransact()({ note: 'Edited HongGwart node', deleteFeatures: [],
       putFeatures: [{ ...wrapped, feature: { ...wrapped.feature, properties: { ...(wrapped.feature.properties || {}), ...properties } } }] });
     setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+  }
+
+  async function updateFeatures(features, requestId, allowInsert = false) {
+    refreshEditor();
+    if (!editor || !Array.isArray(features)) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
+    const putFeatures = features.map((feature) => {
+      const wrapped = editor.data.featureMap.get(feature.id)
+        || Array.from(editor.data.featureMap.values()).find((value) => value.feature?.id === feature.id);
+      if (!wrapped && !allowInsert) throw new Error('선택 지형지물이 변경되었습니다. 다시 선택하세요.');
+      return { ...(wrapped || { id: feature.id }), feature };
+    });
+    await editor.persistence.useTransact()({ note: 'Edited HongGwart graph', deleteFeatures: [], putFeatures });
+    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+  }
+
+  function renderReferences() {
+    if (!map) return;
+    try {
+      if (typeof map.isStyleLoaded === 'function' && !map.isStyleLoaded()) return;
+      if (!referenceGeoJSON.features.length) {
+        if (map.getLayer?.(REFERENCE_LAYER)) map.removeLayer(REFERENCE_LAYER);
+        if (map.getLayer?.(REFERENCE_LINE)) map.removeLayer(REFERENCE_LINE);
+        if (map.getSource?.(REFERENCE_SOURCE)) map.removeSource(REFERENCE_SOURCE);
+        renderedReferenceSource = null;
+        return;
+      }
+      if (![map.addSource, map.addLayer, map.getSource, map.getLayer].every((method) => typeof method === 'function')) {
+        throw new Error('현재 지도에서 읽기 전용 참조 표시를 지원하지 않습니다.');
+      }
+      const existing = map.getSource(REFERENCE_SOURCE);
+      if (existing) {
+        if (existing !== renderedReferenceSource || referenceKey !== renderedReferenceKey) existing.setData(referenceGeoJSON);
+      } else map.addSource(REFERENCE_SOURCE, { type: 'geojson', data: referenceGeoJSON });
+      renderedReferenceSource = map.getSource(REFERENCE_SOURCE); renderedReferenceKey = referenceKey;
+      if (!map.getLayer(REFERENCE_LINE)) map.addLayer({ id: REFERENCE_LINE, type: 'line', source: REFERENCE_SOURCE,
+        filter: ['==', '$type', 'LineString'], paint: { 'line-color': '#f59e0b', 'line-width': 2, 'line-dasharray': [2, 2], 'line-opacity': 0.65 } });
+      if (!map.getLayer(REFERENCE_LAYER)) map.addLayer({ id: REFERENCE_LAYER, type: 'circle', source: REFERENCE_SOURCE,
+        filter: ['==', '$type', 'Point'],
+        paint: { 'circle-radius': 6, 'circle-color': '#f59e0b', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2, 'circle-opacity': 0.8 } });
+      referenceErrorReported = false;
+    } catch (error) {
+      if (!referenceErrorReported) window.postMessage({ source: 'overlayable-bridge', type: 'reference-error', message: error.message }, location.origin);
+      referenceErrorReported = true;
+    }
   }
 
   // ---- 카메라 전송 ----
@@ -332,6 +391,9 @@
     map.on('move', post); // 팬/줌/회전/피치 애니메이션(관성 포함) 동안 매 프레임 발화
     map.on('resize', post); // 에디터 분할선 드래그/창 크기 변경
     map.on('remove', onRemoved);
+    map.on('style.load', renderReferences);
+    map.on('idle', renderReferences);
+    renderReferences();
     post();
     // 지도 resize 없이 일어나는 레이아웃 이동(상단 배너 삽입 등) 감지용 1초 감시.
     rectTimer = setInterval(() => {
@@ -348,6 +410,8 @@
   // 지도가 제거되면(SPA 리마운트 등) 정리하고 재탐색. 제거된 지도는 더 이상 이벤트를 내지 않으므로
   // 리스너 해제는 생략해도 무해하다.
   function onRemoved() {
+    if (map?.off) map.off('style.load', renderReferences);
+    if (map?.off) map.off('idle', renderReferences);
     map = null;
     editor = null;
     editorPersistence = null;
@@ -398,6 +462,16 @@
     if (!d || d.source !== 'overlayable-content') return;
     if (d.type === 'ping') { if (map) post(); refreshEditor(); return; }
     if (d.type === 'geojson-read') { refreshEditor(); postGeoJSON(d.requestId); return; }
+    if (d.type === 'references-set') {
+      referenceGeoJSON = d.geojson && Array.isArray(d.geojson.features) ? d.geojson : { type: 'FeatureCollection', features: [] };
+      referenceKey = JSON.stringify(referenceGeoJSON);
+      renderReferences(); return;
+    }
+    if (d.type === 'geojson-update' || d.type === 'geojson-insert') {
+      updateFeatures(d.features, d.requestId, d.type === 'geojson-insert').catch((error) => window.postMessage({ source: 'overlayable-bridge',
+        type: 'geojson-error', requestId: d.requestId, message: error.message }, location.origin));
+      return;
+    }
     if (d.type === 'geojson-replace') {
       replaceGeoJSON(d.geojson, d.requestId).catch((error) => window.postMessage({ source: 'overlayable-bridge',
         type: 'geojson-error', requestId: d.requestId, message: error.message }, location.origin));

@@ -13,6 +13,7 @@
   NS.mounted = true;
 
   const T = NS.transform;
+  const W = NS.workspace;
 
   // 조작 모드 홀드 키: macOS 는 Command(Meta), 그 외는 Control.
   // macOS 에서 Ctrl+클릭은 OS 가 우클릭(contextmenu)으로 매핑해 조작과 충돌하므로 Command 를 쓴다.
@@ -34,14 +35,17 @@
     workspace: {
       baseUrl: 'http://localhost:8080', layers: [], layerId: null, revision: null,
       status: '백엔드 연결 필요', error: false, selectedFeature: null,
-      pendingLayerId: null, switchPhase: '',
+      pendingLayerId: null, switchPhase: '', selectedFeatures: [], defaultLocation: null,
+      referenceSnapshots: [], referencePhotos: [], references: [], referenceRevisions: {},
+      referenceLoading: false, transferCandidates: null, transferPreview: null,
     },
   };
 
   // ---- 사진 헬퍼 ----
   function getPhoto(id) {
-    return state.photos.find((p) => p.id === id) || null;
+    return visiblePhotos().find((p) => p.id === id) || null;
   }
+  function visiblePhotos() { return [...state.workspace.referencePhotos, ...state.photos]; }
   function getSelected() {
     return state.selectedId != null ? getPhoto(state.selectedId) : null;
   }
@@ -91,6 +95,19 @@
     onFeatureSave: (properties) => patchSelectedFeature(properties),
     onGeoJSONExport: () => exportCurrentGeoJSON(),
     onLayerReload: () => reloadCurrentLayer(),
+    onLocationsSave: (locations) => updateLocations(locations),
+    onDefaultLocation: (key) => changeDefaultLocation(key),
+    onClassifySelected: (key) => classifySelected(key),
+    onReferenceAdd: (id) => addReferenceLayer(id),
+    onReferenceRemove: (id) => removeReferenceLayer(id),
+    onReferenceRefresh: () => refreshReferences(),
+    onReferenceOpacity: (id, opacity) => setReferenceOpacity(id, opacity),
+    onLineSave: (properties) => patchSelectedFeature(properties),
+    onEndpointBind: (end, nodeId) => bindSelectedEndpoint(end, nodeId),
+    onTransferCandidates: (id) => loadTransferCandidates(id),
+    onTransferPreview: (selection) => previewTransfer(selection),
+    onTransferExecute: () => executeTransfer(),
+    onTransferSelectionChange: () => { state.workspace.transferPreview = null; panelApi.sync(state); },
   });
   root.appendChild(panelApi.panel);
 
@@ -100,7 +117,7 @@
   function withSelected(fn) {
     if (state.workspace.pendingLayerId != null) return;
     const p = getSelected();
-    if (!p) return;
+    if (!p || p.readonly) return;
     fn(p);
     reanchorPhoto(p);
     applyState();
@@ -133,9 +150,9 @@
   function applyFrames() {
     root.style.display = state.active ? 'block' : 'none';
     const imageMode = state.mode === 'image';
-    for (const p of state.photos) {
+    for (const p of visiblePhotos()) {
       const els = frames.get(p.id);
-      if (els) NS.overlay.applyFrame(els, p, { imageMode, selected: p.id === state.selectedId });
+      if (els) NS.overlay.applyFrame(els, p, { imageMode: imageMode && !p.readonly, selected: p.id === state.selectedId });
     }
   }
 
@@ -151,7 +168,7 @@
     // 생성 + 순서 정렬: photos 순서대로 배치하되, 이미 제자리면 DOM 을 건드리지 않는다
     // (appendChild 는 같은 위치여도 제거+삽입으로 처리되어 불필요한 churn 을 만든다).
     let cursor = null; // 직전에 자리를 확정한 frame
-    for (const p of state.photos) {
+    for (const p of visiblePhotos()) {
       let els = frames.get(p.id);
       if (!els) {
         els = NS.overlay.createFrame();
@@ -175,7 +192,8 @@
   // 영속화·공유를 위해 objectURL 대신 base64 data URL 을 src 의 단일 표현으로 쓴다.
   // FileReader 로 바이트를 읽는 동안 src 는 빈 문자열이고, 완료되면 채워져 표시된다.
   function addPhoto(file) {
-    if (state.workspace.pendingLayerId != null) return;
+    if (state.workspace.pendingLayerId != null || workspaceBusy) return;
+    if (currentLayer()?.kind === 'SHARED_PATHS') { setWorkspaceStatus('공용 경로에서는 참조 도면 추가를 사용하세요.'); return; }
     const photo = {
       id: state.nextId++,
       uid: crypto.randomUUID(), // import 병합 시 중복 식별용 안정 id
@@ -211,7 +229,7 @@
   function removePhoto(id) {
     if (state.workspace.pendingLayerId != null) return;
     const p = getPhoto(id);
-    if (!p) return;
+    if (!p || p.readonly) return;
     if (state.workspace.layerId != null && p.remoteId) queueWorkspaceImageMutation(() => deleteWorkspacePhoto(p));
     if (gesture && gesture.photoId === id) endGesture(); // 조작 중인 사진이면 제스처 정리
     // 과거 세션의 blob: URL 잔재만 revoke(현재는 data URL 이라 revoke 불필요).
@@ -239,7 +257,7 @@
     // 이동: 이미지 본체 드래그. 커서 아래(최상단) 사진을 자동 선택.
     els.img.addEventListener('mousedown', (e) => {
       const p = getPhoto(id);
-      if (state.mode !== 'image' || !p || !(p.naturalW > 0)) return;
+      if (state.mode !== 'image' || !p || p.readonly || !(p.naturalW > 0)) return;
       e.preventDefault();
       state.selectedId = id;
       gesture = {
@@ -259,7 +277,7 @@
     for (const def of NS.overlay.HANDLE_DEFS) {
       els.handles[def.id].addEventListener('mousedown', (e) => {
         const p = getPhoto(id);
-        if (state.mode !== 'image' || !p || !(p.naturalW > 0)) return;
+        if (state.mode !== 'image' || !p || p.readonly || !(p.naturalW > 0)) return;
         e.preventDefault();
         e.stopPropagation();
         state.selectedId = id;
@@ -286,7 +304,7 @@
     // 회전: 상단 회전 핸들. 중심 기준 각도 변화량을 더한다(스냅 없이 정밀).
     els.rotHandle.addEventListener('mousedown', (e) => {
       const p = getPhoto(id);
-      if (state.mode !== 'image' || !p || !(p.naturalW > 0)) return;
+      if (state.mode !== 'image' || !p || p.readonly || !(p.naturalW > 0)) return;
       e.preventDefault();
       e.stopPropagation();
       state.selectedId = id;
@@ -306,7 +324,7 @@
       'wheel',
       (e) => {
         const p = getPhoto(id);
-        if (state.mode !== 'image' || !p || !(p.naturalW > 0)) return;
+        if (state.mode !== 'image' || !p || p.readonly || !(p.naturalW > 0)) return;
         e.preventDefault(); // 페이지 스크롤 및 Ctrl+휠 페이지 줌 차단
         state.selectedId = id;
 
@@ -441,7 +459,7 @@
       if (!gesture) return;
       const p = getPhoto(gesture.photoId);
       // 1차 종료는 setMode/removePhoto 가 담당. 여기는 혹시 모를 상태 불일치를 막는 안전망.
-      if (state.mode !== 'image' || !p || !(p.naturalW > 0)) {
+      if (state.mode !== 'image' || !p || p.readonly || !(p.naturalW > 0)) {
         endGesture();
         return;
       }
@@ -500,7 +518,7 @@
   // 반복 왕복으로 인한 누적 드리프트가 없다.
   function syncFromCamera() {
     if (!camera) return;
-    for (const p of state.photos) {
+    for (const p of visiblePhotos()) {
       // 제스처 중인 사진은 커서 추종이 우선(지도 관성 글라이드 중 드래그 대비). endGesture 가 재고정.
       if (gesture && gesture.photoId === p.id) continue;
       if (!p.geo) {
@@ -541,7 +559,9 @@
     const d = e.data;
     if (!d || d.source !== 'overlayable-bridge') return;
     if (d.type === 'geojson-state') {
+      state.workspace.ownedPoints = (d.geojson?.features || []).filter((feature) => feature.geometry?.type === 'Point');
       state.workspace.selectedFeature = d.selectedFeature || null;
+      state.workspace.selectedFeatures = d.selectedFeatures || (d.selectedFeature ? [d.selectedFeature] : []);
       const pending = d.requestId && bridgeRequests.get(d.requestId);
       if (pending) { bridgeRequests.delete(d.requestId); d.ready ? pending.resolve(d.geojson) : pending.reject(new Error('geojson.io 편집기를 찾지 못했습니다.')); }
       schedulePanelSync(); return;
@@ -551,6 +571,7 @@
       if (pending) { bridgeRequests.delete(d.requestId); pending.reject(new Error(d.message || 'geojson.io 연동 실패')); }
       return;
     }
+    if (d.type === 'reference-error') { setWorkspaceStatus(`참조 표시 실패: ${d.message}`, true); return; }
     if (d.type !== 'camera') return;
     if (![d.lng, d.lat, d.zoom, d.bearing, d.cx, d.cy].every(Number.isFinite)) return;
     camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy };
@@ -609,7 +630,8 @@
 
   // 파일 텍스트를 파싱해 기존 오버레이에 병합(additive)한다. uid 가 같으면 중복으로 보고 건너뛴다.
   function importState(text) {
-    if (state.workspace.pendingLayerId != null) return;
+    if (state.workspace.pendingLayerId != null || workspaceBusy) return;
+    if (currentLayer()?.kind === 'SHARED_PATHS') { setWorkspaceStatus('공용 경로에서는 참조 도면 추가를 사용하세요.'); return; }
     let records;
     try {
       records = NS.storage.parseImport(text);
@@ -705,7 +727,7 @@
   async function reloadCurrentLayer() {
     if (workspaceBusy) return;
     if(state.workspace.layerId==null) return;
-    try { const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
+    try { const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
       await applyRemoteSnapshot(response.data); imageMutationError=null;
       setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
     } catch(error){ showWorkspaceError(error); }
@@ -717,8 +739,8 @@
       naturalWidth: p.naturalW, naturalHeight: p.naturalH, geo: p.geo || {} }));
   }
 
-  function canonicalHash(geojson, images = transformPayload()) {
-    return JSON.stringify({ geojson, images: images.map(NS.transform.sharedImageTransform)
+  function canonicalHash(geojson, images = transformPayload(), defaultLocation = state.workspace.defaultLocation) {
+    return JSON.stringify({ geojson, defaultLocation: W.locationValue(defaultLocation), images: images.map(NS.transform.sharedImageTransform)
       .sort((a,b) => String(a.id).localeCompare(String(b.id))) });
   }
 
@@ -732,7 +754,7 @@
   }
 
   async function refreshLayers() {
-    const response = await NS.api.request('/api/admin/layers');
+    const response = await NS.api.request('/api/admin/layers?protocolVersion=2');
     state.workspace.layers = response.data || []; panelApi.sync(state);
   }
 
@@ -749,7 +771,7 @@
     if (state.workspace.layerId == null) return;
     try {
       const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/name`, { method:'PUT',
-        body:{ name, expectedRevision:state.workspace.revision } });
+        body:{ name, expectedRevision:state.workspace.revision, protocolVersion:2 } });
       state.workspace.revision=response.data.revision; await refreshLayers(); setWorkspaceStatus('레이어 이름 변경됨');
     } catch(error){ showWorkspaceError(error); }
   }
@@ -760,7 +782,7 @@
     try {
       await syncNow(true);
       const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/copy`, {method:'POST',
-        body:{...request, expectedRevision:state.workspace.revision}});
+        body:{...request, expectedRevision:state.workspace.revision, protocolVersion:2}});
       await refreshLayers(); await selectLayer(response.data.id);
     } catch(error){ showWorkspaceError(error); }
   }
@@ -770,8 +792,9 @@
     if (state.workspace.layerId == null) return;
     try {
       await NS.api.request(`/api/admin/layers/${state.workspace.layerId}`, {method:'DELETE',
-        body:{confirmationName, expectedRevision:state.workspace.revision}});
+        body:{confirmationName, expectedRevision:state.workspace.revision, protocolVersion:2}});
       state.workspace.layerId=null; state.workspace.revision=null; baselineHash=null;
+      clearReferences();
       state.photos=[]; state.selectedId=null;
       await bridge('geojson-replace',{geojson:{type:'FeatureCollection',features:[]}});
       await refreshLayers(); applyState(); setWorkspaceStatus('레이어가 삭제되었습니다.');
@@ -779,6 +802,7 @@
   }
 
   function selectLayer(id) {
+    if (workspaceBusy && !layerSwitchInFlight) return Promise.resolve();
     if (!layerSwitchInFlight && id === state.workspace.layerId) return Promise.resolve();
     state.workspace.pendingLayerId = id;
     panelApi.sync(state);
@@ -806,7 +830,7 @@
 
   async function switchToPendingLayer() {
     const legacyPhotos = state.workspace.layerId == null ? state.photos.filter((p)=>!p.remoteId && p.src?.startsWith('data:')) : [];
-    let importLegacy = legacyPhotos.length > 0 && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
+    let legacyDecisionPending = legacyPhotos.length > 0;
     await flushBeforeSwitch();
     while (state.workspace.pendingLayerId !== state.workspace.layerId) {
       const id = state.workspace.pendingLayerId;
@@ -814,7 +838,7 @@
       panelApi.sync(state);
       let snapshot, loaded;
       try {
-        snapshot = (await NS.api.request(`/api/admin/layers/${id}/snapshot`)).data;
+        snapshot = (await NS.api.request(`/api/admin/layers/${id}/snapshot?protocolVersion=2`)).data;
         if (id !== state.workspace.pendingLayerId) continue;
         loaded = await loadSnapshotImages(snapshot);
       } catch (error) {
@@ -828,11 +852,14 @@
       if (id !== state.workspace.pendingLayerId) continue;
       state.workspace.switchPhase = '지도에 적용 중…';
       panelApi.sync(state);
+      const target = state.workspace.layers.find((layer) => layer.id === id);
+      const importLegacy = legacyDecisionPending && target?.kind !== 'SHARED_PATHS'
+        && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
+      legacyDecisionPending = false;
       await applyRemoteSnapshot(snapshot, loaded);
       if (importLegacy) {
-        importLegacy = false;
         for (const photo of legacyPhotos) await uploadLegacyPhoto(photo);
-        const updated = await NS.api.request(`/api/admin/layers/${id}/snapshot`);
+        const updated = await NS.api.request(`/api/admin/layers/${id}/snapshot?protocolVersion=2`);
         await applyRemoteSnapshot(updated.data);
       }
     }
@@ -861,7 +888,13 @@
     return src;
   }
 
+  function requireSnapshotV2(snapshot) {
+    if (snapshot?.protocolVersion !== 2) throw new Error('백엔드 업데이트 필요(편집 프로토콜 v2)');
+    return snapshot;
+  }
+
   async function loadSnapshotImages(snapshot) {
+    requireSnapshotV2(snapshot);
     return Promise.all((snapshot.images||[]).map(async(meta,index)=>{
       const src = await imageSource(meta);
       return { id:index+1, uid:meta.id, remoteId:meta.id, name:meta.name,
@@ -873,15 +906,35 @@
   }
 
   async function applyRemoteSnapshot(snapshot, loaded, expectedHash) {
+    requireSnapshotV2(snapshot);
     // Prepare all fallible network reads before replacing the currently displayed graph.
     if (!loaded) loaded = await loadSnapshotImages(snapshot);
     if (expectedHash != null && canonicalHash(await bridge('geojson-read')) !== expectedHash) return false;
     const editorGeoJSON=await bridge('geojson-replace',{geojson:snapshot.geojson});
     restoring=true;
     state.photos=loaded; state.nextId=loaded.length+1; state.selectedId=loaded.length?loaded[loaded.length-1].id:null;
+    const changedLayer = state.workspace.layerId !== snapshot.layerId;
+    if (changedLayer) {
+      clearReferences();
+      state.workspace.defaultLocation = null;
+      state.workspace.transferPreview = null;
+      state.workspace.transferCandidates = null;
+    }
     state.workspace.layerId=snapshot.layerId; state.workspace.revision=snapshot.revision;
+    state.workspace.references = snapshot.references || [];
+    state.workspace.referenceRevisions = { ...(snapshot.referenceRevisions || {}) };
     const layerSummary=state.workspace.layers.find((layer)=>layer.id===snapshot.layerId);
-    if(layerSummary) layerSummary.revision=snapshot.revision;
+    if(layerSummary) {
+      layerSummary.revision=snapshot.revision;
+      if (snapshot.kind) layerSummary.kind = snapshot.kind;
+      if (snapshot.locations) layerSummary.locations = snapshot.locations;
+      if (snapshot.requiresProtocolV2 != null) layerSummary.requiresProtocolV2 = snapshot.requiresProtocolV2;
+      if (snapshot.defaultLocation) {
+        layerSummary.defaultLocation = snapshot.defaultLocation;
+        state.workspace.defaultLocation = W.locations(layerSummary).find((value) => W.locationKey(value) === W.locationKey(snapshot.defaultLocation)) || snapshot.defaultLocation;
+      } else state.workspace.defaultLocation ||= layerSummary.defaultLocation || W.locations(layerSummary)[0] || null;
+    }
+    renderReferences();
     NS.api.setLastLayer(snapshot.layerId).catch(()=>{});
     restoring=false; applyState(); if(camera) scheduleCameraSync();
     baselineHash=canonicalHash(editorGeoJSON || snapshot.geojson,
@@ -902,10 +955,14 @@
         const geojson = await bridge('geojson-read');
         const localHash = canonicalHash(geojson);
         if (localHash !== baselineHash) {
+          W.validateExternalVertices(geojson, state.workspace.referenceFeatures);
           setWorkspaceStatus('저장 중…');
-          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`, {
+          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`, {
             method: 'PUT',
-            body: { expectedRevision: state.workspace.revision, geojson, images: transformPayload() },
+            body: { expectedRevision: state.workspace.revision, protocolVersion: 2,
+              geojson: W.withDefaults(geojson, state.workspace.defaultLocation, currentLayer()?.kind === 'SHARED_PATHS'),
+              defaultLocation: W.locationValue(state.workspace.defaultLocation),
+              referenceRevisions: referenceRevisions(geojson), images: transformPayload() },
           });
           // Apply normalized node/edge coordinates only if the saved version is still current.
           if (!await applyRemoteSnapshot(response.data, undefined, localHash)) {
@@ -917,8 +974,10 @@
           }
           setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
         } else if (!flushOnly) {
-          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot`);
-          if (response.data.revision > state.workspace.revision) {
+          const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
+          requireSnapshotV2(response.data);
+          const dependenciesChanged = revisionHash(response.data.referenceRevisions) !== revisionHash(state.workspace.referenceRevisions);
+          if (response.data.revision > state.workspace.revision || dependenciesChanged) {
             if (await applyRemoteSnapshot(response.data, undefined, localHash)) {
               setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
             }
@@ -930,59 +989,249 @@
     try { return await syncInFlight; } finally { syncInFlight = null; }
   }
 
-  async function patchSelectedFeature(properties) {
+  function revisionHash(revisions) { return JSON.stringify(Object.entries(revisions || {}).sort(([a], [b]) => a.localeCompare(b))); }
+
+  function currentLayer() { return state.workspace.layers.find((layer) => layer.id === state.workspace.layerId); }
+
+  async function workspaceAction(operation) {
     if (workspaceBusy) return;
-    try { await bridge('geojson-patch-selected',{properties}); await syncNow(); }
-    catch(error){ showWorkspaceError(error); }
+    workspaceBusy = true;
+    state.workspace.operationBusy = true;
+    panelApi.sync(state);
+    try { await imageMutationQueue; if (imageMutationError) throw imageMutationError; await operation(); }
+    catch (error) { showWorkspaceError(error); }
+    finally { workspaceBusy = false; state.workspace.operationBusy = false; panelApi.sync(state); }
+  }
+
+  async function updateLocations(locations) {
+    return workspaceAction(async () => {
+      await syncNow(true, { flushOnly: true });
+      const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/locations`, {
+        method: 'PUT', body: { expectedRevision: state.workspace.revision, locations, protocolVersion: 2 },
+      });
+      state.workspace.revision = response.data.revision;
+      await refreshLayers();
+      const available = W.locations(currentLayer());
+      state.workspace.defaultLocation = available.find((x) => W.locationKey(x) === W.locationKey(state.workspace.defaultLocation))
+        || available[0] || null;
+      setWorkspaceStatus('허용 소속을 저장했습니다.');
+    });
+  }
+
+  async function changeDefaultLocation(key) {
+    return workspaceAction(async () => {
+      // Save every existing draft with the OLD default before accepting the next one.
+      await syncNow(true, { flushOnly: true });
+      const location = W.locations(currentLayer()).find((value) => W.locationKey(value) === key);
+      if (!location) throw new Error('등록된 소속을 선택하세요.');
+      state.workspace.defaultLocation = location;
+      await syncNow(true, { flushOnly: true });
+      setWorkspaceStatus(`새 노드 소속: ${W.locationLabel(location)}`);
+    });
+  }
+
+  async function classifySelected(key) {
+    return workspaceAction(async () => {
+      await bridge('geojson-read');
+      const location = W.locations(currentLayer()).find((value) => W.locationKey(value) === key);
+      if (!location) throw new Error('등록된 소속을 선택하세요.');
+      const selected = state.workspace.selectedFeatures.filter((f) => f.geometry?.type === 'Point');
+      if (!selected.length) throw new Error('소속을 변경할 Point를 선택하세요.');
+      await bridge('geojson-update', { features: selected.map((feature) => ({ ...feature,
+        properties: { ...feature.properties, location: W.locationValue(location) } })) });
+      await syncNow(true, { flushOnly: true });
+      setWorkspaceStatus(`${selected.length}개 노드의 소속을 변경했습니다.`);
+    });
+  }
+
+  let referenceGeneration = 0;
+  function clearReferences() {
+    referenceGeneration++;
+    state.workspace.referenceSnapshots = [];
+    state.workspace.referencePhotos = [];
+    state.workspace.references = [];
+    state.workspace.referenceRevisions = {};
+    state.workspace.referenceLoading = false;
+    window.postMessage({ source: 'overlayable-content', type: 'references-set',
+      geojson: { type: 'FeatureCollection', features: [] } }, location.origin);
+  }
+
+  function renderReferences() {
+    const collection = W.referenceCollection(state.workspace.referenceSnapshots, state.workspace.references, state.workspace.referenceRevisions);
+    state.workspace.referenceFeatures = collection.features;
+    window.postMessage({ source: 'overlayable-content', type: 'references-set', geojson: collection }, location.origin);
+  }
+
+  function referenceRevisions(geojson) {
+    const revisions = { ...state.workspace.referenceRevisions };
+    const used = new Set((geojson?.features || []).flatMap((feature) =>
+      (feature.properties?.overlayable?.vertexRefs || []).filter((ref) => ref?.nodeId != null).map((ref) => String(ref.ownerLayerId))));
+    for (const snapshot of state.workspace.referenceSnapshots) {
+      if (used.has(String(snapshot.layerId))) revisions[snapshot.layerId] = Math.max(revisions[snapshot.layerId] || 0, snapshot.revision);
+    }
+    return revisions;
+  }
+
+  async function addReferenceLayer(id, force = false) {
+    if ((!force && workspaceBusy) || state.workspace.referenceLoading || state.workspace.layerId == null || id === state.workspace.layerId) return;
+    const generation = referenceGeneration;
+    state.workspace.referenceLoading = true; panelApi.sync(state);
+    try {
+      const snapshot = (await NS.api.request(`/api/admin/layers/${id}/snapshot?protocolVersion=2`)).data;
+      const photos = await loadSnapshotImages(snapshot);
+      if (generation !== referenceGeneration) return;
+      state.workspace.referenceSnapshots = [...state.workspace.referenceSnapshots.filter((s) => s.layerId !== id), snapshot];
+      state.workspace.referencePhotos = [...state.workspace.referencePhotos.filter((p) => p.referenceLayerId !== id),
+        ...photos.map((photo) => ({ ...photo, id: `reference:${id}:${photo.remoteId}`,
+          referenceLayerId: id, readonly: true }))];
+      renderReferences(); applyState(); if (camera) scheduleCameraSync();
+      setWorkspaceStatus('참조 도면·노드를 불러왔습니다. 참조 데이터는 읽기 전용입니다.');
+    } catch (error) { if (generation === referenceGeneration) showWorkspaceError(error); }
+    finally { if (generation === referenceGeneration) { state.workspace.referenceLoading = false; panelApi.sync(state); } }
+  }
+
+  function removeReferenceLayer(id) {
+    if (state.workspace.referenceLoading) return;
+    state.workspace.referenceSnapshots = state.workspace.referenceSnapshots.filter((s) => s.layerId !== id);
+    state.workspace.referencePhotos = state.workspace.referencePhotos.filter((p) => p.referenceLayerId !== id);
+    renderReferences(); applyState();
+  }
+
+  async function refreshReferences(force = false) {
+    for (const snapshot of [...state.workspace.referenceSnapshots]) await addReferenceLayer(snapshot.layerId, force);
+  }
+
+  function setReferenceOpacity(id, value) {
+    for (const photo of state.workspace.referencePhotos) if (photo.referenceLayerId === id) photo.opacity = value;
+    applyFrames();
+  }
+
+  async function bindSelectedEndpoint(end, nodeId) {
+    return workspaceAction(async () => {
+      await bridge('geojson-read');
+      const selected = state.workspace.selectedFeatures;
+      if (selected.length !== 1 || selected[0].geometry?.type !== 'LineString') throw new Error('선 하나를 선택하세요.');
+      const owned = nodeId == null ? null : state.workspace.ownedPoints?.find((f) => f.properties?.overlayable?.nodeId === nodeId);
+      const reference = owned ? { ...owned, properties: { ...owned.properties, overlayable: { ...owned.properties.overlayable, ownerLayerId: state.workspace.layerId } } }
+        : nodeId == null ? null : state.workspace.referenceFeatures?.find((f) => f.geometry?.type === 'Point' && f.properties?.overlayable?.nodeId === nodeId);
+      if (nodeId != null && !reference) throw new Error('참조 노드를 다시 선택하세요.');
+      const updated = W.bindEndpoint(selected[0], end, reference, state.workspace.layerId);
+      await bridge('geojson-update', { features: [updated] });
+      await syncNow(true, { flushOnly: true });
+    });
+  }
+
+  async function loadTransferCandidates(layerId) {
+    if (workspaceBusy) return;
+    const owner = state.workspace.layerId;
+    try {
+      const response = await NS.api.request('/api/admin/graph-transfers/candidates' + (layerId == null ? '' : `?layerId=${layerId}`));
+      if (owner !== state.workspace.layerId) return;
+      state.workspace.transferCandidates = { ...response.data, sourceLayerId: layerId };
+      state.workspace.transferPreview = null; panelApi.sync(state);
+    } catch (error) { showWorkspaceError(error); }
+  }
+
+  async function previewTransfer(selection) {
+    return workspaceAction(async () => {
+      await syncNow(true, { flushOnly: true });
+      const request = { targetLayerId: selection.targetLayerId, nodeIds: selection.nodeIds, edgeIds: selection.edgeIds };
+      const response = await NS.api.request('/api/admin/graph-transfers/preview', { method: 'POST', body: request });
+      state.workspace.transferPreview = { ...response.data, request };
+      panelApi.sync(state);
+      setWorkspaceStatus('이전 미리보기를 확인한 뒤 실행하세요. 아직 데이터는 변경되지 않았습니다.');
+    });
+  }
+
+  async function executeTransfer() {
+    const preview = state.workspace.transferPreview;
+    if (!preview) return;
+    return workspaceAction(async () => {
+      await syncNow(true, { flushOnly: true });
+      const localHash = canonicalHash(await bridge('geojson-read'));
+      await NS.api.request('/api/admin/graph-transfers', { method: 'POST', body: { ...preview.request,
+        expectedRevisions: preview.expectedRevisions, previewToken: preview.previewToken } });
+      state.workspace.transferPreview = null;
+      state.workspace.transferCandidates = null;
+      await refreshLayers();
+      const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
+      if (!await applyRemoteSnapshot(response.data, undefined, localHash)) {
+        setWorkspaceStatus('이전은 완료됐지만 처리 중 추가 편집이 있습니다. GeoJSON을 내보낸 뒤 원격 데이터를 다시 불러오세요.', true);
+        return;
+      }
+      await refreshReferences(true);
+      setWorkspaceStatus('노드 ID를 유지하여 공용 경로로 이전했습니다.');
+    });
+  }
+
+  async function patchSelectedFeature(properties) {
+    return workspaceAction(async () => {
+      await bridge('geojson-patch-selected', { properties });
+      await syncNow(true, { flushOnly: true });
+    });
   }
 
   async function verticalConnectFlow() {
-    if (workspaceBusy) return;
-    if(state.workspace.layerId==null) return;
-    try {
-      await syncNow(true);
-      const feature=state.workspace.selectedFeature; const nodeId=feature?.properties?.overlayable?.nodeId;
-      if(!nodeId) throw new Error('먼저 저장된 Point 하나를 선택하세요.');
-      if(!state.workspace.connectionDraft) {
-        state.workspace.connectionDraft={sourceNodeId:nodeId,sourceLayerId:state.workspace.layerId};
-        setWorkspaceStatus('연결 시작점 저장됨 · 대상 층 레이어로 전환해 Point를 선택하세요.'); return;
+    return workspaceAction(async () => {
+      if (state.workspace.layerId == null) return;
+      await syncNow(true, { flushOnly: true });
+      await bridge('geojson-read');
+      const feature = state.workspace.selectedFeature;
+      const nodeId = feature?.properties?.overlayable?.nodeId;
+      if (!nodeId || state.workspace.selectedFeatures.length !== 1 || feature.geometry?.type !== 'Point') {
+        throw new Error('먼저 저장된 Point 하나를 선택하세요.');
       }
-      const draft=state.workspace.connectionDraft;
-      if(draft.sourceLayerId===state.workspace.layerId) throw new Error('다른 층 레이어로 전환하세요.');
-      await refreshLayers();
-      const source=state.workspace.layers.find((l)=>l.id===draft.sourceLayerId);
-      if(!source) throw new Error('시작 레이어가 삭제되었습니다.');
-      const transport=prompt('이동 수단: STAIR 또는 ELEVATOR','STAIR');
-      const weight=Number(prompt('이동 가중치(m)','3'));
-      if(!transport || !(weight>0)) return;
-      await NS.api.request('/api/admin/layers/vertical-connections',{method:'POST', body:{
-        sourceNodeId:draft.sourceNodeId,targetNodeId:nodeId,transport,weight,bidirectional:true,
-        sourceExpectedRevision:source.revision,targetExpectedRevision:state.workspace.revision}});
-      state.workspace.connectionDraft=null;
-      await refreshLayers(); const current=state.workspace.layers.find((l)=>l.id===state.workspace.layerId);
-      if(current) state.workspace.revision=current.revision; baselineHash=null;
-      await syncNow(); setWorkspaceStatus('층 연결이 생성되었습니다.');
-    } catch(error){ showWorkspaceError(error); }
+      if (!state.workspace.connectionDraft) {
+        state.workspace.connectionDraft = { sourceNodeId: nodeId, sourceLayerId: state.workspace.layerId };
+        setWorkspaceStatus('연결 시작점 저장됨 · 다른 층의 Point를 선택한 뒤 연결을 완료하세요.'); return;
+      }
+      const draft = state.workspace.connectionDraft;
+      if (draft.sourceNodeId === nodeId) {
+        state.workspace.connectionDraft = null; setWorkspaceStatus('층 연결을 취소했습니다.'); return;
+      }
+      const snapshot = requireSnapshotV2((await NS.api.request(`/api/admin/layers/${draft.sourceLayerId}/snapshot?protocolVersion=2`)).data);
+      const source = snapshot.geojson.features.find((f) => f.geometry?.type === 'Point' && f.properties?.overlayable?.nodeId === draft.sourceNodeId);
+      if (!source) throw new Error('시작 노드가 삭제되거나 이전되었습니다. 같은 시작점을 다시 선택해 취소하세요.');
+      const transport = prompt('이동 수단: STAIR 또는 ELEVATOR', 'STAIR');
+      if (transport == null) return;
+      if (!['STAIR', 'ELEVATOR'].includes(transport)) throw new Error('STAIR 또는 ELEVATOR를 입력하세요.');
+      const weightInput = prompt('이동 가중치(m)', '3'); if (weightInput == null) return;
+      const weight = Number(weightInput); if (!Number.isFinite(weight) || weight <= 0) throw new Error('가중치는 양수여야 합니다.');
+      const id = crypto.randomUUID();
+      const sourceRef = draft.sourceLayerId === state.workspace.layerId
+        ? { editorId: source.properties.overlayable.editorId }
+        : { nodeId: draft.sourceNodeId, ownerLayerId: draft.sourceLayerId };
+      state.workspace.referenceRevisions[draft.sourceLayerId] = snapshot.revision;
+      const line = { type: 'Feature', id, properties: { edgeType: transport, indoor: true, bidirectional: true,
+        weightMode: 'MANUAL', weights: [weight], overlayable: { kind: 'edge-chain', featureId: id,
+          vertexRefs: [sourceRef, { editorId: feature.properties.overlayable.editorId }], segmentEdgeIds: [] } },
+        geometry: { type: 'LineString', coordinates: [source.geometry.coordinates, feature.geometry.coordinates] } };
+      await bridge('geojson-insert', { features: [line] });
+      await syncNow(true, { flushOnly: true });
+      state.workspace.connectionDraft = null;
+      setWorkspaceStatus('현재 레이어 소유의 층간 연결을 저장했습니다.');
+    });
   }
 
   async function uploadWorkspacePhoto(file, photo) {
     const base64=photo.src.slice(photo.src.indexOf(',')+1);
-    const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
+    const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}&protocolVersion=2`,
       {method:'POST',bodyType:'image-form',body:{base64,name:file.name||'image',contentType:file.type||'application/octet-stream'}});
     photo.remoteId=response.data.id; photo.uid=response.data.id; state.workspace.revision += 1; baselineHash=null;
     await syncNow(true);
   }
 
   async function uploadLegacyPhoto(photo) {
+    if (currentLayer()?.kind === 'SHARED_PATHS') throw new Error('공용 경로에는 이미지를 업로드할 수 없습니다. 참조 도면을 추가하세요.');
     const comma=photo.src.indexOf(','); const header=photo.src.slice(0,comma);
     const contentType=(header.match(/^data:([^;]+)/)||[])[1]||'image/png';
-    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}`,
+    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images?expectedRevision=${state.workspace.revision}&protocolVersion=2`,
       {method:'POST',bodyType:'image-form',body:{base64:photo.src.slice(comma+1),name:photo.name||'image',contentType}});
     state.workspace.revision += 1;
   }
 
   async function deleteWorkspacePhoto(photo) {
-    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images/${photo.remoteId}?expectedRevision=${state.workspace.revision}`,{method:'DELETE'});
+    await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images/${photo.remoteId}?expectedRevision=${state.workspace.revision}&protocolVersion=2`,{method:'DELETE'});
     state.workspace.revision += 1; baselineHash=null;
   }
 

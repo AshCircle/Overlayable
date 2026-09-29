@@ -6,7 +6,7 @@ const { webcrypto } = require('node:crypto');
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag; this.children = []; this.listeners = {}; this.attributes = {};
-    this.style = { setProperty() {} }; this.value = ''; this.className = ''; this.textContent = '';
+    this.checked = false; this.disabled = false; this.style = { setProperty() {} }; this.value = ''; this.className = ''; this.textContent = '';
     const classes = new Set();
     this.classList = { add: x => classes.add(x), remove: x => classes.delete(x),
       toggle: (x, on) => on ? classes.add(x) : classes.delete(x) };
@@ -41,14 +41,14 @@ function collection(id) {
     geometry: { type: 'Point', coordinates: [id, id] }, properties: { name: `floor-${id}` } }] };
 }
 function snapshot(id) {
-  return { layerId: id, revision: 1, geojson: collection(id), images: [{ id: `image-${id}`,
+  return { layerId: id, revision: 1, protocolVersion: 2, geojson: collection(id), images: [{ id: `image-${id}`,
     contentHash: `hash-${id}`, contentUrl: `/images/${id}`, contentType: 'image/png', name: `floor-${id}.png`,
     x: 0, y: 0, scale: 1, rotation: 0, opacity: 0.6, naturalWidth: 640, naturalHeight: 480, geo: {} }] };
 }
 
 async function workspace() {
   const h = { requests: [], replacements: [], elements: [], snapshots: new Map([1, 2, 3].map(id => [id, snapshot(id)])),
-    geojson: { type: 'FeatureCollection', features: [] }, requestHook: null };
+    confirmations: [], geojson: { type: 'FeatureCollection', features: [] }, requestHook: null };
   const listeners = new Map(), timers = new Map(), intervals = new Map();
   let timerId = 0;
   const document = { documentElement: new Element(), body: new Element(), activeElement: null,
@@ -59,6 +59,15 @@ async function workspace() {
     postMessage(message) {
       if (!message.requestId) return;
       queueMicrotask(() => {
+        if (message.type === 'geojson-insert') h.geojson.features.push(...structuredClone(message.features));
+        if (message.type === 'geojson-update') {
+          const replacements = new Map(message.features.map(f => [f.id, f]));
+          h.geojson.features = h.geojson.features.map(f => structuredClone(replacements.get(f.id) || f));
+        }
+        if (message.type === 'geojson-patch-selected') {
+          const ids = new Set(h.selectedIds || []);
+          h.geojson.features = h.geojson.features.map(f => ids.has(f.id) ? { ...f, properties: { ...f.properties, ...message.properties } } : f);
+        }
         if (message.type === 'geojson-replace') {
           h.geojson = structuredClone(message.geojson); h.replacements.push(structuredClone(h.geojson));
         }
@@ -67,11 +76,13 @@ async function workspace() {
     } };
   h.emitGeoJSON = requestId => {
     for (const fn of listeners.get('message') || []) fn({ source: window, origin: 'https://geojson.io', data: {
-      source: 'overlayable-bridge', type: 'geojson-state', requestId, ready: true, geojson: structuredClone(h.geojson) } });
+      source: 'overlayable-bridge', type: 'geojson-state', requestId, ready: true, geojson: structuredClone(h.geojson),
+      selectedFeatures: h.geojson.features.filter(f => (h.selectedIds || []).includes(f.id)),
+      selectedFeature: h.geojson.features.find(f => (h.selectedIds || []).includes(f.id)) || null } });
   };
   h.defaultRequest = async (url, options = {}) => {
-    if (url === '/api/admin/layers') return { data: [1, 2, 3].map(id => ({ id, name: `${id}층`, buildingCode: 'C', floor: id })) };
-    const match = url.match(/^\/api\/admin\/layers\/(\d+)\/snapshot$/);
+    if (url === '/api/admin/layers?protocolVersion=2') return { data: [1, 2, 3].map(id => ({ id, name: `${id}층`, buildingCode: 'C', buildingNodeId: 10, floor: String(id), floorOrder: id, revision: h.snapshots.get(id).revision, kind: 'FLOOR_PLAN', locations: [{ buildingNodeId: 10, buildingCode: 'C', buildingName: 'C동', floor: String(id), floorOrder: id }] })) };
+    const match = url.match(/^\/api\/admin\/layers\/(\d+)\/snapshot\?protocolVersion=2$/);
     if (match) {
       const id = Number(match[1]);
       const saved = h.snapshots.get(id);
@@ -79,6 +90,7 @@ async function workspace() {
         if (options.body.expectedRevision !== saved.revision) throw Object.assign(new Error('conflict'), { status: 409 });
         saved.revision++;
         saved.geojson = structuredClone(options.body.geojson);
+        saved.defaultLocation = structuredClone(options.body.defaultLocation);
       }
       return { data: structuredClone(saved) };
     }
@@ -99,12 +111,13 @@ async function workspace() {
   const context = vm.createContext({ window, document, navigator: { platform: 'MacIntel' }, crypto: webcrypto,
     location: { origin: 'https://geojson.io' }, console, URL, Blob,
     chrome: { runtime: { onMessage: { addListener() {} } } },
-    MutationObserver: class { observe() {} }, confirm: () => true,
+    MutationObserver: class { observe() {} }, confirm: (message) => { h.confirmations.push(message); return true; },
+    prompt: () => (h.promptAnswers || []).shift() ?? null,
     setTimeout(fn, ms) { const id = ++timerId; timers.set(id, { fn, ms }); return id; },
     clearTimeout: id => timers.delete(id), setInterval(fn, ms) { intervals.set(ms, fn); },
     requestAnimationFrame() {} });
   function load(file) { vm.runInContext(fs.readFileSync(path.join(__dirname, '../../', file), 'utf8'), context, { filename: file }); }
-  load('src/transform.js'); load('src/panel.js');
+  load('src/transform.js'); load('src/workspace.js'); load('src/workspace-panel.js'); load('src/panel.js');
   const createPanel = NS.panel.create;
   NS.panel.create = handlers => {
     h.handlers = handlers;
@@ -117,6 +130,7 @@ async function workspace() {
   load('src/content.js');
   await turn();
   await h.handlers.onConnect('https://test.invalid', '');
+  h.selectFeatures = ids => { h.selectedIds = ids; h.emitGeoJSON(); };
   h.select = id => h.handlers.onLayerSelect(id);
   h.autosync = () => intervals.get(10000)();
   h.pollPanel = () => { h.emitGeoJSON(); for (const [id, timer] of timers) if (timer.ms === 100) { timers.delete(id); timer.fn(); } };
