@@ -460,3 +460,46 @@
   color: #7e87a3 !important;
   line-height: 1.4 !important;
 }
+
+/* Shared-path and mixed-building editors. Keep long lists inside the panel. */
+.imgovl-v2-section {
+  margin: 8px 0 !important;
+  padding: 7px !important;
+  border: 1px solid rgba(148, 163, 184, .25) !important;
+  border-radius: 7px !important;
+}
+.imgovl-v2-section > summary {
+  cursor: pointer !important;
+  color: #e2e8f0 !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  margin-bottom: 7px !important;
+}
+.imgovl-field {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  margin: 5px 0 !important;
+  color: #cbd5e1 !important;
+  font-size: 11px !important;
+}
+.imgovl-field > span { flex: 1 1 auto !important; }
+.imgovl-field > .imgovl-text { min-width: 0 !important; width: 62% !important; }
+.imgovl-small { font-size: 11px !important; color: #cbd5e1 !important; }
+.imgovl-reference-row { display: flex !important; flex-wrap: wrap !important; gap: 5px !important; font-size: 11px !important; margin: 7px 0 !important; }
+.imgovl-reference-row > input { min-width: 0 !important; width: 95px !important; }
+.imgovl-candidate-list { max-height: 220px !important; overflow-y: auto !important; }
+.imgovl-candidate-list .imgovl-field { padding: 4px !important; border-bottom: 1px solid rgba(148, 163, 184, .15) !important; }
+.imgovl-transfer-preview {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  max-height: 230px !important;
+  overflow: auto !important;
+  font: 11px/1.5 system-ui, sans-serif !important;
+  color: #e2e8f0 !important;
+}
+.imgovl-workspace-v2 .imgovl-hint { white-space: pre-line !important; margin: 5px 0 !important; }
+.imgovl-workspace-v2 button:disabled { opacity: .45 !important; cursor: default !important; }
+
+.imgovl-upload-disabled { opacity: .4 !important; cursor: default !important; }

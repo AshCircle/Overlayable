@@ -4,13 +4,13 @@ const { workspace, turn, deferred, collection } = require('./helpers/workspace.c
 
 test('clean switch keeps pending selection through panel polling and skips old layer fetch', async () => {
   const h = await workspace(), pending = deferred();
-  h.requestHook = (url, options) => url === '/api/admin/layers/2/snapshot' ? pending.promise : h.defaultRequest(url, options);
+  h.requestHook = (url, options) => url === '/api/admin/layers/2/snapshot?protocolVersion=2' ? pending.promise : h.defaultRequest(url, options);
   const switching = h.select(2);
   await turn(); h.pollPanel();
   assert.equal(h.layerSelect.value, '2');
   assert.match(h.status.textContent, /2층 전환 중/);
   assert.equal(h.state.workspace.layerId, 1);
-  assert.deepEqual(h.requests.map(r => r.url), ['/api/admin/layers/2/snapshot']);
+  assert.deepEqual(h.requests.map(r => r.url), ['/api/admin/layers/2/snapshot?protocolVersion=2']);
   await h.autosync();
   assert.equal(h.requests.length, 1);
   pending.resolve({ data: structuredClone(h.snapshots.get(2)) });
@@ -22,7 +22,7 @@ test('clean switch keeps pending selection through panel polling and skips old l
 
 test('latest selection wins even when an obsolete snapshot request fails', async () => {
   const h = await workspace(), pending = deferred();
-  h.requestHook = (url, options) => url === '/api/admin/layers/2/snapshot' ? pending.promise : h.defaultRequest(url, options);
+  h.requestHook = (url, options) => url === '/api/admin/layers/2/snapshot?protocolVersion=2' ? pending.promise : h.defaultRequest(url, options);
   const first = h.select(2);
   await turn();
   assert.equal(h.select(3), first);
@@ -181,7 +181,7 @@ test('remote polling cannot overwrite edits made while waiting for its response'
   const h = await workspace(), pending = deferred();
   h.snapshots.get(1).revision++;
   h.snapshots.get(1).geojson.features[0].properties.name = 'remote edit';
-  h.requestHook = (url, options) => !options.method && url === '/api/admin/layers/1/snapshot'
+  h.requestHook = (url, options) => !options.method && url === '/api/admin/layers/1/snapshot?protocolVersion=2'
     ? pending.promise : h.defaultRequest(url, options);
   const sync = h.autosync();
   await turn();
