@@ -38,6 +38,7 @@
       pendingLayerId: null, switchPhase: '', selectedFeatures: [], defaultLocation: null,
       referenceSnapshots: [], referencePhotos: [], references: [], referenceRevisions: {},
       referenceLoading: false, transferCandidates: null, transferPreview: null,
+      corners: NS.corners.empty(), savedCorners: NS.corners.empty(), cornerPitch: null,
     },
   };
 
@@ -58,6 +59,8 @@
   const root = document.createElement('div');
   root.className = 'imgovl-root';
   root.appendChild(container);
+  const cornerOverlay = NS.corners.createOverlay((x, y) => pickCornerAt(x, y));
+  root.appendChild(cornerOverlay.root);
 
   // 패널 핸들러: 컨트롤 → state 갱신 → applyState. 모두 선택된 사진 대상.
   const panelApi = NS.panel.create({
@@ -108,6 +111,12 @@
     onTransferPreview: (selection) => previewTransfer(selection),
     onTransferExecute: () => executeTransfer(),
     onTransferSelectionChange: () => { state.workspace.transferPreview = null; panelApi.sync(state); },
+    onCornerImage: () => useSelectedCornerImage(),
+    onCornerCoordinate: (index, longitude, latitude) => setCornerCoordinate(index, longitude, latitude),
+    onCornerPick: (index) => startCornerPick(index),
+    onCornerCancel: () => cancelCornerPick(),
+    onCornerSave: () => workspaceAction(() => syncNow(true, { flushOnly: true })),
+    onCornerDiscard: () => discardCornerDraft(),
   });
   root.appendChild(panelApi.panel);
 
@@ -154,6 +163,7 @@
       const els = frames.get(p.id);
       if (els) NS.overlay.applyFrame(els, p, { imageMode: imageMode && !p.readonly, selected: p.id === state.selectedId });
     }
+    cornerOverlay.sync(state, camera);
   }
 
   // photos 배열에 맞춰 프레임을 생성/제거하고 z-order(배열 순서)대로 정렬한다.
@@ -230,6 +240,9 @@
     if (state.workspace.pendingLayerId != null) return;
     const p = getPhoto(id);
     if (!p || p.readonly) return;
+    if (p.remoteId === state.workspace.corners.imageId && state.workspace.corners.dirty) {
+      setWorkspaceStatus('이 사진의 미저장 기준점을 먼저 저장하거나 기준점 편집을 취소하세요.', true); return;
+    }
     if (state.workspace.layerId != null && p.remoteId) queueWorkspaceImageMutation(() => deleteWorkspacePhoto(p));
     if (gesture && gesture.photoId === id) endGesture(); // 조작 중인 사진이면 제스처 정리
     // 과거 세션의 blob: URL 잔재만 revoke(현재는 data URL 이라 revoke 불필요).
@@ -360,7 +373,7 @@
 
   // ---- 모드 전환 (MODE_KEY 홀드: macOS=Command, 그 외=Ctrl) ----
   function setMode(mode) {
-    if (mode === 'image' && state.workspace.pendingLayerId != null) return;
+    if (mode === 'image' && (state.workspace.pendingLayerId != null || state.workspace.corners.picking != null)) return;
     if (state.mode === mode) return;
     state.mode = mode;
     // image 모드를 벗어나면 잔존 제스처를 즉시 종료(다음 mousemove까지 미루지 않음).
@@ -374,6 +387,7 @@
   window.addEventListener(
     'keydown',
     (e) => {
+      if (e.key === 'Escape') cancelCornerPick();
       if (e.key === MODE_KEY) setMode('image');
     },
     true
@@ -386,7 +400,7 @@
     true
   );
   // stuck 방지: 탭 전환/포커스 상실 시 keyup 유실 대비.
-  window.addEventListener('blur', () => setMode('web'));
+  window.addEventListener('blur', () => { setMode('web'); cancelCornerPick(); });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) setMode('web');
   });
@@ -574,7 +588,10 @@
     if (d.type === 'reference-error') { setWorkspaceStatus(`참조 표시 실패: ${d.message}`, true); return; }
     if (d.type !== 'camera') return;
     if (![d.lng, d.lat, d.zoom, d.bearing, d.cx, d.cy].every(Number.isFinite)) return;
-    camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy };
+    camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy,
+      pitch: Number.isFinite(d.pitch) ? d.pitch : 0, rect: d.rect };
+    state.workspace.cornerPitch = camera.pitch;
+    if (camera.pitch !== 0) state.workspace.corners.picking = null;
     if (!state.mapLinked) {
       state.mapLinked = true;
       schedulePanelSync(); // 패널의 연동 상태 표시 갱신
@@ -594,6 +611,7 @@
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg && msg.type === 'OVERLAYABLE_TOGGLE') {
         state.active = !state.active;
+        if (!state.active) state.workspace.corners.picking = null;
         applyState();
       }
     });
@@ -725,12 +743,13 @@
   }
 
   async function reloadCurrentLayer() {
-    if (workspaceBusy) return;
     if(state.workspace.layerId==null) return;
-    try { const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
-      await applyRemoteSnapshot(response.data); imageMutationError=null;
+    return workspaceAction(async () => {
+      if (syncInFlight) await syncInFlight.catch(() => {});
+      const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
+      await applyRemoteSnapshot(response.data, undefined, undefined, true); imageMutationError=null;
       setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
-    } catch(error){ showWorkspaceError(error); }
+    }, { recoverImageError: true });
   }
 
   function transformPayload() {
@@ -794,6 +813,7 @@
       await NS.api.request(`/api/admin/layers/${state.workspace.layerId}`, {method:'DELETE',
         body:{confirmationName, expectedRevision:state.workspace.revision, protocolVersion:2}});
       state.workspace.layerId=null; state.workspace.revision=null; baselineHash=null;
+      state.workspace.corners = NS.corners.empty(); state.workspace.savedCorners = NS.corners.empty();
       clearReferences();
       state.photos=[]; state.selectedId=null;
       await bridge('geojson-replace',{geojson:{type:'FeatureCollection',features:[]}});
@@ -805,6 +825,7 @@
     if (workspaceBusy && !layerSwitchInFlight) return Promise.resolve();
     if (!layerSwitchInFlight && id === state.workspace.layerId) return Promise.resolve();
     state.workspace.pendingLayerId = id;
+    cancelCornerPick();
     panelApi.sync(state);
     if (layerSwitchInFlight) return layerSwitchInFlight;
     // Lock before the first await: autosync and repeated clicks cannot start a second switch.
@@ -856,7 +877,12 @@
       const importLegacy = legacyDecisionPending && target?.kind !== 'SHARED_PATHS'
         && confirm(`로컬에만 저장된 이미지 ${legacyPhotos.length}장을 선택한 레이어로 가져올까요?`);
       legacyDecisionPending = false;
-      await applyRemoteSnapshot(snapshot, loaded);
+      try {
+        if (!await applyRemoteSnapshot(snapshot, loaded)) continue;
+      } catch (error) {
+        if (id !== state.workspace.pendingLayerId) continue;
+        throw error;
+      }
       if (importLegacy) {
         for (const photo of legacyPhotos) await uploadLegacyPhoto(photo);
         const updated = await NS.api.request(`/api/admin/layers/${id}/snapshot?protocolVersion=2`);
@@ -905,15 +931,30 @@
     }));
   }
 
-  async function applyRemoteSnapshot(snapshot, loaded, expectedHash) {
+  async function applyRemoteSnapshot(snapshot, loaded, expectedHash, discardCorners = false, protectCornerDraft = false) {
     requireSnapshotV2(snapshot);
     // Prepare all fallible network reads before replacing the currently displayed graph.
     if (!loaded) loaded = await loadSnapshotImages(snapshot);
+    const layer = state.workspace.layers.find((item) => item.id === snapshot.layerId);
+    const remoteCorners = (snapshot.kind || layer?.kind) === 'SHARED_PATHS' ? NS.corners.empty()
+      : (await NS.api.request(`/api/layers/${snapshot.layerId}/floor-plan-corners`)).data;
+    if (remoteCorners.revision != null && remoteCorners.revision !== snapshot.revision) {
+      throw Object.assign(new Error('기준점 조회 중 레이어가 변경되었습니다. 다시 불러오세요.'), { status: 409 });
+    }
+    if (state.workspace.pendingLayerId != null && snapshot.layerId !== state.workspace.layerId
+      && snapshot.layerId !== state.workspace.pendingLayerId) return false;
+    if (protectCornerDraft && state.workspace.corners.dirty) return false;
     if (expectedHash != null && canonicalHash(await bridge('geojson-read')) !== expectedHash) return false;
     const editorGeoJSON=await bridge('geojson-replace',{geojson:snapshot.geojson});
     restoring=true;
     state.photos=loaded; state.nextId=loaded.length+1; state.selectedId=loaded.length?loaded[loaded.length-1].id:null;
     const changedLayer = state.workspace.layerId !== snapshot.layerId;
+    const savedCorners = { ...NS.corners.empty(), imageId: remoteCorners.imageId,
+      points: remoteCorners.points?.length ? remoteCorners.points.map((point) => ({ ...point })) : [null, null] };
+    state.workspace.savedCorners = savedCorners;
+    if (changedLayer || discardCorners || !state.workspace.corners.dirty) {
+      state.workspace.corners = { ...savedCorners, points: savedCorners.points.map((point) => point && { ...point }) };
+    }
     if (changedLayer) {
       clearReferences();
       state.workspace.defaultLocation = null;
@@ -973,16 +1014,17 @@
             return;
           }
           setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
-        } else if (!flushOnly) {
+        } else if (!flushOnly && !state.workspace.corners.dirty) {
           const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
           requireSnapshotV2(response.data);
           const dependenciesChanged = revisionHash(response.data.referenceRevisions) !== revisionHash(state.workspace.referenceRevisions);
           if (response.data.revision > state.workspace.revision || dependenciesChanged) {
-            if (await applyRemoteSnapshot(response.data, undefined, localHash)) {
+            if (await applyRemoteSnapshot(response.data, undefined, localHash, false, true)) {
               setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
             }
           } else setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
         }
+        if (state.workspace.corners.dirty) await saveCornerDraft(flushOnly);
         return;
       } while (flushOnly);
     })();
@@ -993,12 +1035,103 @@
 
   function currentLayer() { return state.workspace.layers.find((layer) => layer.id === state.workspace.layerId); }
 
-  async function workspaceAction(operation) {
+  function cornerEditable() {
+    return !workspaceBusy && !imageMutationBusy && !state.workspace.corners.saving
+      && currentLayer()?.kind === 'FLOOR_PLAN';
+  }
+
+  function cancelCornerPick() {
+    state.workspace.corners.picking = null;
+    applyFrames(); panelApi.sync(state);
+  }
+
+  function useSelectedCornerImage() {
+    if (!cornerEditable()) return;
+    const photo = getSelected();
+    if (!photo?.remoteId || photo.readonly) return;
+    const draft = state.workspace.corners;
+    if (draft.imageId !== photo.remoteId) {
+      if (draft.dirty) { setWorkspaceStatus('미저장 기준점을 저장하거나 편집 취소한 뒤 다른 사진을 선택하세요.', true); return; }
+      state.workspace.corners = { ...NS.corners.empty(), imageId: photo.remoteId, dirty: true };
+    }
+    applyState();
+  }
+
+  function setCornerCoordinate(index, longitude, latitude) {
+    if (!cornerEditable() || ![0, 1].includes(index) || !state.workspace.corners.imageId) return;
+    const draft = state.workspace.corners;
+    draft.points[index] = { longitude, latitude };
+    draft.dirty = true; draft.error = null;
+    try { NS.corners.point(longitude, latitude); } catch (error) { draft.error = error.message; }
+    applyState();
+  }
+
+  function startCornerPick(index) {
+    if (!cornerEditable() || ![0, 1].includes(index) || !state.workspace.corners.imageId) return;
+    if (!camera?.rect || camera.pitch !== 0) {
+      setWorkspaceStatus('지도 연동 후 기울임(pitch)을 0으로 되돌리고 기준점을 찍으세요.', true); return;
+    }
+    setMode('web');
+    state.workspace.corners.picking = index;
+    applyState();
+  }
+
+  function pickCornerAt(x, y) {
+    const index = state.workspace.corners.picking;
+    if (index == null || !cornerEditable() || !camera || camera.pitch !== 0) return;
+    const rect = camera.rect;
+    if (!rect || x < rect.left || x > rect.left + rect.width || y < rect.top || y > rect.top + rect.height) return;
+    const value = NS.geo.unproject({ x, y }, camera);
+    state.workspace.corners.picking = null;
+    setCornerCoordinate(index, value.lng, value.lat);
+  }
+
+  function discardCornerDraft() {
+    if (!cornerEditable()) return;
+    const saved = state.workspace.savedCorners;
+    state.workspace.corners = { ...saved, points: saved.points.map((point) => point && { ...point }) };
+    applyState();
+  }
+
+  async function saveCornerDraft(required) {
+    const draft = state.workspace.corners;
+    if (!draft.dirty) return;
+    let points;
+    try {
+      if (!state.photos.some((photo) => photo.remoteId === draft.imageId)) throw new Error('기준점의 사진이 없습니다. 사진을 다시 선택하세요.');
+      points = NS.corners.validate(draft);
+    } catch (error) {
+      draft.error = error.message; panelApi.sync(state);
+      if (required) throw error;
+      return;
+    }
+    draft.saving = true; draft.picking = null; draft.error = null;
+    applyFrames(); panelApi.sync(state);
+    try {
+      const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/floor-plan-corners`, {
+        method: 'POST', body: { expectedRevision: state.workspace.revision, imageId: draft.imageId, points },
+      });
+      // Only the successful mutation may advance the shared graph/image/corner revision.
+      state.workspace.revision = response.data.revision;
+      currentLayer().revision = response.data.revision;
+      const saved = { ...NS.corners.empty(), imageId: response.data.imageId,
+        points: response.data.points.map((point) => ({ ...point })) };
+      state.workspace.savedCorners = saved;
+      state.workspace.corners = { ...saved, points: saved.points.map((point) => ({ ...point })) };
+      setWorkspaceStatus(`기준점 저장됨 · revision ${response.data.revision}`);
+    } catch (error) {
+      draft.error = error.status === 409 ? '기준점 저장 충돌 · 좌표는 유지됩니다. 좌표를 백업한 뒤 원격 다시 불러오기를 사용하세요.'
+        : `기준점 저장 실패 · 좌표는 유지됩니다: ${error.message}`;
+      throw error;
+    } finally { draft.saving = false; applyFrames(); panelApi.sync(state); }
+  }
+
+  async function workspaceAction(operation, { recoverImageError = false } = {}) {
     if (workspaceBusy) return;
     workspaceBusy = true;
     state.workspace.operationBusy = true;
     panelApi.sync(state);
-    try { await imageMutationQueue; if (imageMutationError) throw imageMutationError; await operation(); }
+    try { await imageMutationQueue; if (imageMutationError && !recoverImageError) throw imageMutationError; await operation(); }
     catch (error) { showWorkspaceError(error); }
     finally { workspaceBusy = false; state.workspace.operationBusy = false; panelApi.sync(state); }
   }
@@ -1233,6 +1366,11 @@
   async function deleteWorkspacePhoto(photo) {
     await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/images/${photo.remoteId}?expectedRevision=${state.workspace.revision}&protocolVersion=2`,{method:'DELETE'});
     state.workspace.revision += 1; baselineHash=null;
+    if (state.workspace.corners.imageId === photo.remoteId) {
+      state.workspace.corners = NS.corners.empty();
+      applyFrames(); panelApi.sync(state);
+    }
+    if (state.workspace.savedCorners.imageId === photo.remoteId) state.workspace.savedCorners = NS.corners.empty();
   }
 
   async function bootstrapWorkspace() {

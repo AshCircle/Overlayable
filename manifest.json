@@ -26,6 +26,7 @@
         "src/geo.js",
         "src/overlay.js",
         "src/workspace.js",
+        "src/corners.js",
         "src/workspace-panel.js",
         "src/panel.js",
         "src/storage.js",

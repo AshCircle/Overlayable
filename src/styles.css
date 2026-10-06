@@ -4,6 +4,37 @@
    1차 격리 전략은 prefix + !important 이며, 충돌 발생 시 Shadow DOM 전환을 검토한다(PLAN 6). */
 
 /* ===== 오버레이 ===== */
+.imgovl-corners-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  pointer-events: none !important;
+  z-index: 2147483646 !important;
+}
+.imgovl-corner-picker {
+  position: fixed !important;
+  pointer-events: auto !important;
+  cursor: crosshair !important;
+  background: transparent !important;
+}
+.imgovl-corner-marker {
+  position: fixed !important;
+  width: 26px !important;
+  height: 26px !important;
+  transform: translate(-50%, -50%) !important;
+  place-items: center !important;
+  border: 2px solid white !important;
+  border-radius: 50% !important;
+  box-shadow: 0 0 0 2px #172554, 0 2px 8px #0009 !important;
+  color: white !important;
+  font: bold 14px/1 system-ui, sans-serif !important;
+  pointer-events: none !important;
+  box-sizing: border-box !important;
+}
+.imgovl-corner-1 { background: #b91c1c !important; }
+.imgovl-corner-2 { background: #1d4ed8 !important; }
+.imgovl-corner-row { display: grid !important; gap: 5px !important; margin: 10px 0 !important; }
+.imgovl-corners-panel .imgovl-hint { white-space: normal !important; }
+
 .imgovl-overlay {
   position: fixed !important;
   inset: 0 !important;
