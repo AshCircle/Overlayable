@@ -65,13 +65,14 @@
     const featureMeta = el('div', { class: 'imgovl-sync-status', text: 'Point를 선택하세요' });
     const featureSave = el('button', { class: 'imgovl-action-btn', type: 'button', text: '선택 Point 반영' });
     const advanced = NS.workspacePanel.create(handlers);
+    const corners = NS.corners.createPanel(handlers);
     const workspace = el('section', { class: 'imgovl-workspace' }, [
       el('div', { class: 'imgovl-section-title', text: 'HongGwart 공유 레이어' }),
       backendUrl, apiKey, connectBtn, layerSelect,
       el('div', { class: 'imgovl-actions' }, [newLayerBtn, copyLayerBtn]),
       el('div', { class: 'imgovl-actions' }, [renameLayerBtn, deleteLayerBtn, verticalBtn]),
       el('div', { class: 'imgovl-actions' }, [geojsonExportBtn, reloadLayerBtn]),
-      syncStatus, ownershipSummary, advanced.root,
+      syncStatus, corners.root, ownershipSummary, advanced.root,
       el('div', { class: 'imgovl-feature-editor' }, [
         el('div', { class: 'imgovl-section-title', text: '선택 Point' }), featureMeta, featureName, featureType,
         el('label', { class: 'imgovl-check-label' }, [featureSearchable, document.createTextNode(' 검색 가능')]),
@@ -102,7 +103,7 @@
     renameLayerBtn.addEventListener('click', () => { const name=prompt('새 레이어 이름'); if(name) handlers.onLayerRename(name); });
     deleteLayerBtn.addEventListener('click', () => { const name=prompt('삭제할 레이어 이름을 정확히 입력하세요.'); if(name) handlers.onLayerDelete(name); });
     geojsonExportBtn.addEventListener('click', () => handlers.onGeoJSONExport());
-    reloadLayerBtn.addEventListener('click', () => { if(confirm('저장되지 않은 로컬 GeoJSON 변경을 버리고 원격 데이터를 불러올까요?')) handlers.onLayerReload(); });
+    reloadLayerBtn.addEventListener('click', () => { if(confirm('저장되지 않은 GeoJSON·사진 배치·기준점 변경을 버리고 원격 데이터를 불러올까요?')) handlers.onLayerReload(); });
     verticalBtn.addEventListener('click', () => handlers.onVerticalConnect());
     featureSave.addEventListener('click', () => handlers.onFeatureSave({ name: featureName.value || null,
       nodeType: featureType.value, searchable: featureSearchable.checked, roomNumber: featureRoom.value || null }));
@@ -437,6 +438,7 @@
       dropzone.classList.toggle('imgovl-upload-disabled', sharedPaths);
       copyLayerBtn.disabled = switching || !!ws.operationBusy || !activeLayer || activeLayer.requiresProtocolV2 || activeLayer.kind === 'SHARED_PATHS' || (activeLayer.locations || []).length > 1;
       advanced.sync(state);
+      corners.sync(state);
       verticalBtn.textContent = ws.connectionDraft ? '이 Point에 층 연결 완료' : '선택 Point에서 층 연결 시작';
     }
 

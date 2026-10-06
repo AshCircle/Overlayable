@@ -48,6 +48,7 @@ function snapshot(id) {
 
 async function workspace() {
   const h = { requests: [], replacements: [], elements: [], snapshots: new Map([1, 2, 3].map(id => [id, snapshot(id)])),
+    corners: new Map(),
     confirmations: [], geojson: { type: 'FeatureCollection', features: [] }, requestHook: null };
   const listeners = new Map(), timers = new Map(), intervals = new Map();
   let timerId = 0;
@@ -80,8 +81,24 @@ async function workspace() {
       selectedFeatures: h.geojson.features.filter(f => (h.selectedIds || []).includes(f.id)),
       selectedFeature: h.geojson.features.find(f => (h.selectedIds || []).includes(f.id)) || null } });
   };
+  h.emitCamera = (overrides = {}) => {
+    for (const fn of listeners.get('message') || []) fn({ source: window, origin: 'https://geojson.io', data: {
+      source: 'overlayable-bridge', type: 'camera', lng: 126, lat: 37, zoom: 18, bearing: 0, pitch: 0,
+      cx: 500, cy: 400, rect: { left: 0, top: 0, width: 1000, height: 800 }, ...overrides } });
+    h.panel.sync(h.state);
+  };
   h.defaultRequest = async (url, options = {}) => {
     if (url === '/api/admin/layers?protocolVersion=2') return { data: [1, 2, 3].map(id => ({ id, name: `${id}층`, buildingCode: 'C', buildingNodeId: 10, floor: String(id), floorOrder: id, revision: h.snapshots.get(id).revision, kind: 'FLOOR_PLAN', locations: [{ buildingNodeId: 10, buildingCode: 'C', buildingName: 'C동', floor: String(id), floorOrder: id }] })) };
+    const corners = url.match(/^\/api\/(?:admin\/)?layers\/(\d+)\/floor-plan-corners$/);
+    if (corners) {
+      const id = Number(corners[1]), snapshot = h.snapshots.get(id);
+      if (options.method === 'POST') {
+        if (options.body.expectedRevision !== snapshot.revision) throw Object.assign(new Error('conflict'), { status: 409 });
+        snapshot.revision++;
+        h.corners.set(id, structuredClone({ imageId: options.body.imageId, points: options.body.points }));
+      }
+      return { data: { layerId: id, revision: snapshot.revision, ...structuredClone(h.corners.get(id) || { imageId: null, points: [] }) } };
+    }
     const match = url.match(/^\/api\/admin\/layers\/(\d+)\/snapshot\?protocolVersion=2$/);
     if (match) {
       const id = Number(match[1]);
@@ -117,7 +134,7 @@ async function workspace() {
     clearTimeout: id => timers.delete(id), setInterval(fn, ms) { intervals.set(ms, fn); },
     requestAnimationFrame() {} });
   function load(file) { vm.runInContext(fs.readFileSync(path.join(__dirname, '../../', file), 'utf8'), context, { filename: file }); }
-  load('src/transform.js'); load('src/workspace.js'); load('src/workspace-panel.js'); load('src/panel.js');
+  load('src/transform.js'); load('src/geo.js'); load('src/workspace.js'); load('src/corners.js'); load('src/workspace-panel.js'); load('src/panel.js');
   const createPanel = NS.panel.create;
   NS.panel.create = handlers => {
     h.handlers = handlers;
@@ -128,6 +145,7 @@ async function workspace() {
     return panel;
   };
   load('src/content.js');
+  h.cornersModule = NS.corners;
   await turn();
   await h.handlers.onConnect('https://test.invalid', '');
   h.selectFeatures = ids => { h.selectedIds = ids; h.emitGeoJSON(); };
