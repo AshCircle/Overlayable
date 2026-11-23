@@ -6,6 +6,7 @@
 빌드 도구·의존성 없이 Vanilla JS로 작성되었습니다.
 
 상세 작업 절차와 주의사항은 [한국어 사용 가이드](docs/USER_GUIDE.md)를 참고하세요.
+체크리스트가 있는 [HTML 사용 가이드](docs/USER_GUIDE.html)와 [초기 데이터 입력 런북](docs/SEED_RUNBOOK.html)은 내려받은 파일을 브라우저에서 열어 사용할 수 있습니다.
 
 ## 설치 (압축해제된 확장 로드)
 
