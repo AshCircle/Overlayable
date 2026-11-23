@@ -54,6 +54,7 @@ async function workspace() {
   let timerId = 0;
   const document = { documentElement: new Element(), body: new Element(), activeElement: null,
     createElement(tag) { const el = new Element(tag); h.elements.push(el); return el; },
+    createElementNS(namespace, tag) { const el = new Element(tag); h.elements.push(el); return el; },
     createTextNode(text) { const el = new Element('#text'); el.textContent = text; return el; }, addEventListener() {} };
   const window = { innerWidth: 1000, innerHeight: 800,
     addEventListener(name, fn) { (listeners.get(name) || listeners.set(name, []).get(name)).push(fn); },
@@ -134,7 +135,7 @@ async function workspace() {
     clearTimeout: id => timers.delete(id), setInterval(fn, ms) { intervals.set(ms, fn); },
     requestAnimationFrame() {} });
   function load(file) { vm.runInContext(fs.readFileSync(path.join(__dirname, '../../', file), 'utf8'), context, { filename: file }); }
-  load('src/transform.js'); load('src/geo.js'); load('src/workspace.js'); load('src/corners.js'); load('src/workspace-panel.js'); load('src/panel.js');
+  load('src/transform.js'); load('src/geo.js'); load('src/workspace.js'); load('src/corners.js'); load('src/marks.js'); load('src/workspace-panel.js'); load('src/panel.js');
   const createPanel = NS.panel.create;
   NS.panel.create = handlers => {
     h.handlers = handlers;
@@ -146,6 +147,7 @@ async function workspace() {
   };
   load('src/content.js');
   h.cornersModule = NS.corners;
+  h.marksModule = NS.marks;
   await turn();
   await h.handlers.onConnect('https://test.invalid', '');
   h.selectFeatures = ids => { h.selectedIds = ids; h.emitGeoJSON(); };

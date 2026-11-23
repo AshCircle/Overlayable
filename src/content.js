@@ -59,6 +59,9 @@
   const root = document.createElement('div');
   root.className = 'imgovl-root';
   root.appendChild(container);
+  const markOverlay = NS.marks.createOverlay();
+  root.appendChild(markOverlay.root);
+  let renderedMarks = null;
   const cornerOverlay = NS.corners.createOverlay((x, y) => pickCornerAt(x, y));
   root.appendChild(cornerOverlay.root);
 
@@ -106,6 +109,7 @@
     onReferenceRefresh: () => refreshReferences(),
     onReferenceOpacity: (id, opacity) => setReferenceOpacity(id, opacity),
     onLineSave: (properties) => patchSelectedFeature(properties),
+    onMarkSelected: (code) => markSelectedFeatures(code),
     onEndpointBind: (end, nodeId) => bindSelectedEndpoint(end, nodeId),
     onTransferCandidates: (id) => loadTransferCandidates(id),
     onTransferPreview: (selection) => previewTransfer(selection),
@@ -163,6 +167,7 @@
       const els = frames.get(p.id);
       if (els) NS.overlay.applyFrame(els, p, { imageMode: imageMode && !p.readonly, selected: p.id === state.selectedId });
     }
+    markOverlay.sync(state, camera);
     cornerOverlay.sync(state, camera);
   }
 
@@ -573,6 +578,12 @@
     const d = e.data;
     if (!d || d.source !== 'overlayable-bridge') return;
     if (d.type === 'geojson-state') {
+      const marks = NS.marks.collection(d.geojson);
+      const markKey = JSON.stringify(marks);
+      if (markKey !== renderedMarks) {
+        renderedMarks = markKey;
+        window.postMessage({ source: 'overlayable-content', type: 'marks-set', geojson: marks }, location.origin);
+      }
       state.workspace.ownedPoints = (d.geojson?.features || []).filter((feature) => feature.geometry?.type === 'Point');
       state.workspace.selectedFeature = d.selectedFeature || null;
       state.workspace.selectedFeatures = d.selectedFeatures || (d.selectedFeature ? [d.selectedFeature] : []);
@@ -589,7 +600,7 @@
     if (d.type !== 'camera') return;
     if (![d.lng, d.lat, d.zoom, d.bearing, d.cx, d.cy].every(Number.isFinite)) return;
     camera = { lng: d.lng, lat: d.lat, zoom: d.zoom, bearing: d.bearing, cx: d.cx, cy: d.cy,
-      pitch: Number.isFinite(d.pitch) ? d.pitch : 0, rect: d.rect };
+      pitch: Number.isFinite(d.pitch) ? d.pitch : 0, rect: d.rect, marks: d.marks || [] };
     state.workspace.cornerPitch = camera.pitch;
     if (camera.pitch !== 0) state.workspace.corners.picking = null;
     if (!state.mapLinked) {
@@ -1294,6 +1305,20 @@
       }
       await refreshReferences(true);
       setWorkspaceStatus('노드 ID를 유지하여 공용 경로로 이전했습니다.');
+    });
+  }
+
+  async function markSelectedFeatures(code) {
+    return workspaceAction(async () => {
+      if (state.workspace.layerId == null || state.workspace.pendingLayerId != null) throw new Error('편집할 레이어를 먼저 선택하세요.');
+      await bridge('geojson-read');
+      const selected = state.workspace.selectedFeatures;
+      if (!selected.length) throw new Error('표시할 노드 또는 간선을 선택하세요.');
+      // Validate the entire selection before one transaction; preserve all unrelated graph data.
+      const features = selected.map((feature) => NS.marks.withMark(feature, code));
+      await bridge('geojson-update', { features });
+      await syncNow(true, { flushOnly: true });
+      setWorkspaceStatus(`${selected.length}개 ${code === null ? '표시 해제' : `${code} 표시`} 저장됨 · revision ${state.workspace.revision}`);
     });
   }
 

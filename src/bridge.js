@@ -38,6 +38,7 @@
   const REFERENCE_LINE = 'overlayable-reference-edges-line';
   let referenceErrorReported = false;
   let referenceKey = '', renderedReferenceKey = '', renderedReferenceSource = null;
+  let markedFeatures = []; // View-only annotations; never written into editor persistence.
 
   // 빠른 폴링(250ms × 40회 = 10초) → 실패 시 경고 1회 → 2초 간격으로 영구 재시도(SPA 늦은 마운트 대비).
   const FAST_MS = 250;
@@ -350,6 +351,35 @@
     return rect.left + ',' + rect.top + ',' + rect.width + ',' + rect.height;
   }
 
+  function readMarks(geojson) {
+    if (!Array.isArray(geojson?.features)) return [];
+    return geojson.features.flatMap((feature, index) => {
+      const code = feature?.properties?.overlayableMark;
+      const type = feature?.geometry?.type;
+      if (typeof code !== 'string' || !/^[A-G]$/.test(code) || !['Point', 'LineString'].includes(type)) return [];
+      const coordinates = type === 'Point' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+      if (!Array.isArray(coordinates) || coordinates.length < (type === 'Point' ? 1 : 2)
+        || coordinates.some((coordinate) => !Array.isArray(coordinate) || coordinate.length < 2
+          || !Number.isFinite(coordinate[0]) || !Number.isFinite(coordinate[1])
+          || Math.abs(coordinate[0]) > 180 || Math.abs(coordinate[1]) > 90)) return [];
+      return [{ id: feature.id ?? `mark-${index}`, code, type, coordinates: coordinates.map((coordinate) => coordinate.slice(0, 2)) }];
+    });
+  }
+
+  function projectMarks(rect) {
+    return markedFeatures.flatMap(({ id, code, type, coordinates }) => {
+      try {
+        // Use the live map projection so bearing, pitch and map padding match the graph exactly.
+        const points = coordinates.map((coordinate) => {
+          const projected = map.project(coordinate);
+          return { x: rect.left + projected.x, y: rect.top + projected.y };
+        });
+        if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return [];
+        return [{ id, code, type, points }];
+      } catch (_) { return []; }
+    });
+  }
+
   function post() {
     if (!map) return;
     try {
@@ -374,6 +404,7 @@
           cx: rect.left + pt.x,
           cy: rect.top + pt.y,
           rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+          marks: projectMarks(rect),
         },
         location.origin
       );
@@ -462,6 +493,10 @@
     if (!d || d.source !== 'overlayable-content') return;
     if (d.type === 'ping') { if (map) post(); refreshEditor(); return; }
     if (d.type === 'geojson-read') { refreshEditor(); postGeoJSON(d.requestId); return; }
+    if (d.type === 'marks-set') {
+      markedFeatures = readMarks(d.geojson);
+      post(); return;
+    }
     if (d.type === 'references-set') {
       referenceGeoJSON = d.geojson && Array.isArray(d.geojson.features) ? d.geojson : { type: 'FeatureCollection', features: [] };
       referenceKey = JSON.stringify(referenceGeoJSON);

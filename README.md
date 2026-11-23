@@ -169,3 +169,11 @@ git diff --check
 ## 참고 문서
 
 - [추가 참고 문서 (Claude Artifact)](https://claude.ai/code/artifact/90904ace-8caa-43b4-a7d0-955af3472e49)
+
+## 노드·간선 A–G 표시
+
+레이어에서 노드·간선을 선택한 뒤 **노드·간선 표시**의 색상 버튼을 누르면 A=빨강, B=주황, C=노랑, D=초록, E=파랑, F=남색, G=보라 표시를 붙입니다. 여러 대상의 일괄 표시와 선택 표시 해제를 지원합니다. 지도에는 도면 위로 문자 배지와 색상 외곽선을 표시합니다.
+
+저장 필드는 `properties.data.overlayableMark`이며 기존 백엔드의 사용자 데이터 저장 계약을 사용합니다. 간선 표시는 LineString 전체 단위입니다. 자세한 사용법은 [사용자 가이드](docs/USER_GUIDE.md#노드간선에-ag-표시-붙이기)를 참고하세요.
+
+확장 소스를 갱신한 뒤 `chrome://extensions`에서 Overlayable을 새로고침하고 geojson.io 탭도 새로고침하면 적용됩니다.

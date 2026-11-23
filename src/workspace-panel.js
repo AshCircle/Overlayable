@@ -36,6 +36,28 @@
     let candidatesIdentity, selectedNodes = new Set(), selectedEdges = new Set();
     let renderedReferences = '', renderedPreview = '', renderedSelection = '';
     const root = el('div', { class: 'imgovl-workspace-v2' });
+    const markSelection = el('div', { class: 'imgovl-hint' });
+    const markStatus = el('div', { class: 'imgovl-hint', role: 'status' });
+    const markPalette = el('div', { class: 'imgovl-mark-palette', role: 'group', 'aria-label': '선택 노드·간선 표시 색상' });
+    const markButtons = NS.marks.palette.map(({ code, label: name, color, ink }) => {
+      const control = button('', () => handlers.onMarkSelected(code));
+      control.className += ' imgovl-mark-chip';
+      control.setAttribute('aria-label', `${code} ${name} 표시`);
+      control.setAttribute('aria-pressed', 'false');
+      control.title = `${code} · ${name}`;
+      control.style.setProperty('--imgovl-mark-color', color);
+      control.style.setProperty('--imgovl-mark-ink', ink);
+      control.appendChild(el('strong', { class: 'imgovl-mark-letter', text: code }));
+      control.appendChild(el('span', { class: 'imgovl-mark-name', text: name }));
+      markPalette.appendChild(control);
+      return { code, control };
+    });
+    const markClear = button('선택 표시 지우기', () => handlers.onMarkSelected(null));
+    const marksPanel = section('노드·간선 표시', [markSelection, markPalette, markStatus, row(markClear),
+      el('div', { class: 'imgovl-hint', text: '색을 누르면 선택한 대상에 표시하고 자동 저장합니다. 같은 문자는 여러 대상에 붙일 수 있고, 선은 선택한 선 전체에 적용합니다.' }),
+      el('div', { class: 'imgovl-hint', text: '명령 예: “A 노드를 B 간선에 연결해 줘.”' })]);
+    marksPanel.open = true;
+    root.appendChild(marksPanel);
     const locationSummary = el('div', { class: 'imgovl-hint' });
     const defaultLocation = select(); defaultLocation.setAttribute('aria-label', '새 노드 기본 소속');
     defaultLocation.addEventListener('change', () => handlers.onDefaultLocation(defaultLocation.value));
@@ -173,6 +195,29 @@
       const shared = layer?.kind === 'SHARED_PATHS';
       const busy = ws.pendingLayerId != null || ws.operationBusy;
       for (const control of controls) control.disabled = busy || !layer;
+      const markTargets = ws.selectedFeatures || [];
+      const markable = markTargets.length > 0 && markTargets.every(NS.marks.isMarkable);
+      const markedCounts = new Map();
+      for (const feature of markTargets) {
+        const code = NS.marks.getMark(feature);
+        markedCounts.set(code, (markedCounts.get(code) || 0) + 1);
+      }
+      const markedNodes = markTargets.filter((feature) => feature.geometry?.type === 'Point').length;
+      const markedLines = markTargets.filter((feature) => feature.geometry?.type === 'LineString').length;
+      markSelection.textContent = !layer ? '레이어를 선택하세요.' : !markTargets.length
+        ? '지도에서 노드 또는 간선을 선택하세요. 여러 대상도 함께 표시할 수 있습니다.'
+        : !markable ? '현재 레이어의 노드(Point)·간선(LineString)만 선택하세요.'
+        : `선택 노드 ${markedNodes}개 · 선 ${markedLines}개`;
+      markStatus.textContent = !markable ? '' : `현재 표시${markedCounts.size > 1 ? ' (혼합)' : ''}: ${[
+        ...NS.marks.palette.filter(({ code }) => markedCounts.has(code)).map(({ code, label: name }) => `${code} ${name} ${markedCounts.get(code)}개`),
+        ...(markedCounts.has(null) ? [`없음 ${markedCounts.get(null)}개`] : []),
+      ].join(' · ')}`;
+      for (const { code, control } of markButtons) {
+        control.disabled = busy || !layer || !markable;
+        control.setAttribute('aria-pressed', markable && markedCounts.has(code)
+          ? markedCounts.size === 1 ? 'true' : 'mixed' : 'false');
+      }
+      markClear.disabled = busy || !layer || !markable || !markTargets.some((feature) => NS.marks.getMark(feature));
       if (currentLayerId !== ws.layerId) { currentLayerId = ws.layerId; locationsDirty = false; locationSource = ''; }
       const available = W.locations(layer);
       const source = JSON.stringify(available);
