@@ -35,7 +35,7 @@ test('discovers separate persistence/data fibers and reads live selection and co
 
 function editableBridge() {
   const { webcrypto } = require('node:crypto');
-  const callbacks = new Map(), sources = new Map(), layers = new Map(), messages = [];
+  const callbacks = new Map(), sources = new Map(), layers = new Map(), messages = [], intervals = [];
   let listener;
   let data = { featureMap: new Map(), selection: { type: 'none' } };
   const atom = { read() {} }, store = { get: () => data };
@@ -55,14 +55,42 @@ function editableBridge() {
   vm.runInNewContext(fs.readFileSync(require.resolve('../src/bridge.js'), 'utf8'), {
     window, Map, Set, crypto: webcrypto, console: { info() {}, warn() {} },
     document: { querySelectorAll: () => [host] }, location: { origin: 'https://geojson.io' },
-    setInterval() {}, clearInterval() {}, setTimeout: (fn) => queueMicrotask(fn),
+    setInterval(fn, ms) { intervals.push({ fn, ms }); }, clearInterval() {}, setTimeout: (fn) => queueMicrotask(fn),
   });
-  return { sources, layers, callbacks, messages, data, map, async send(type, payload = {}) {
+  return { sources, layers, callbacks, messages, data, map,
+    pollEditor() { intervals.at(-1).fn(); }, async send(type, payload = {}) {
     listener({ source: window, data: { source: 'overlayable-content', type, requestId: 'test', ...payload } });
     await new Promise(setImmediate);
     return messages.at(-1);
   } };
 }
+
+test('idle polling skips unchanged graphs while reads, selections and edits remain current', async () => {
+  const h = editableBridge();
+  const feature = { type: 'Feature', id: 'a', properties: {}, geometry: { type: 'Point', coordinates: [1, 2] } };
+  h.data.featureMap.set('a', { id: 'a', feature });
+  h.messages.length = 0;
+  await h.send('geojson-read');
+  assert.equal(h.messages.length, 1, 'explicit reads send only their response');
+  for (let i = 0; i < 20; i++) h.pollEditor();
+  assert.equal(h.messages.length, 1, 'idle polls do not clone the graph again');
+  h.data.selection = { type: 'single', id: 'a' };
+  h.pollEditor();
+  assert.equal(h.messages.length, 2);
+  assert.equal(h.messages.at(-1).selectedFeature, feature);
+  h.data.featureMap.set('a', { id: 'a', feature: { ...feature, geometry: { type: 'Point', coordinates: [3, 4] } } });
+  h.pollEditor();
+  assert.equal(h.messages.length, 3);
+  assert.deepEqual(h.messages.at(-1).geojson.features[0].geometry.coordinates, [3, 4]);
+  h.data.featureMap.get('a').feature.geometry.coordinates[0] = 5;
+  const read = await h.send('geojson-read');
+  assert.equal(read.geojson.features[0].geometry.coordinates[0], 5, 'explicit reads include in-place edits');
+  const count = h.messages.length;
+  await h.send('geojson-update', { features: [{ ...read.selectedFeature, properties: { name: 'edited' } }] });
+  assert.equal(h.messages.length, count + 1, 'mutation sends one fresh acknowledgement');
+  h.data.featureMap.delete('a'); h.pollEditor();
+  assert.equal(h.messages.at(-1).geojson.features.length, 0);
+});
 
 test('reference map source stays outside editor persistence and survives map style reload', async () => {
   const h = editableBridge();

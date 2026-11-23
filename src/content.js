@@ -551,7 +551,7 @@
       p.rotation = T.normalizeRotation(p.geo.rotation - (camera.bearing - p.geo.bearing));
     }
     applyFrames(); // 멤버십/순서 불변 → reconcile 생략
-    schedulePanelSync();
+    schedulePanelSync(false);
   }
 
   // 카메라 메시지는 지도 애니메이션 동안 매 프레임 오므로 rAF 로 병합해 프레임당 1회만 반영.
@@ -564,11 +564,15 @@
   }
 
   // 패널 sync 는 목록/슬라이더 DOM 갱신 비용이 있어 카메라 경로에서는 최대 10Hz(trailing)로 제한.
-  function schedulePanelSync() {
+  let panelFullSyncPending = false;
+  function schedulePanelSync(full = true) {
+    panelFullSyncPending ||= full;
     if (panelSyncTimer != null) return;
     panelSyncTimer = setTimeout(() => {
       panelSyncTimer = null;
-      panelApi.sync(state);
+      const sync = panelFullSyncPending ? panelApi.sync : panelApi.syncCamera;
+      panelFullSyncPending = false;
+      sync(state);
     }, 100);
   }
 
@@ -711,6 +715,11 @@
   let imageMutationError = null;
   let baselineHash = null;
   let syncTimer = null;
+  let revisionPollingSupported = true;
+  let syncFailures = 0;
+  let nextSyncAttemptAt = 0;
+  let syncRecoveryError = null;
+  let remoteRefreshRequired = false;
   // Session-only LRU, bounded by encoded string length. Never reuse unversioned content.
   const imageCache = new Map();
   const IMAGE_CACHE_LIMIT = 32 * 1024 * 1024;
@@ -721,6 +730,7 @@
   }
 
   function showWorkspaceError(error) {
+    if (error?.recoveryMessage) { setWorkspaceStatus(error.recoveryMessage, true); return; }
     const conflict = error && error.status === 409;
     setWorkspaceStatus(conflict
       ? '충돌: 다른 작업자가 변경했습니다. 로컬 편집은 유지됩니다. 레이어를 다시 불러오기 전에 GeoJSON을 내보내세요.'
@@ -759,6 +769,7 @@
       if (syncInFlight) await syncInFlight.catch(() => {});
       const response=await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
       await applyRemoteSnapshot(response.data, undefined, undefined, true); imageMutationError=null;
+      resetSyncHealth();
       setWorkspaceStatus(`원격 데이터 다시 불러옴 · revision ${response.data.revision}`);
     }, { recoverImageError: true });
   }
@@ -779,6 +790,7 @@
     try {
       setWorkspaceStatus('연결 중…'); await NS.api.configure(url || 'http://localhost:8080', key || '');
       state.workspace.baseUrl = (url || 'http://localhost:8080').replace(/\/$/, '');
+      revisionPollingSupported = true;
       await refreshLayers(); setWorkspaceStatus('연결됨 · 레이어를 선택하세요');
     } catch (error) { showWorkspaceError(error); }
   }
@@ -910,7 +922,7 @@
       imageCache.delete(key); imageCache.set(key, src);
       return src;
     }
-    const content = await NS.api.request(meta.contentUrl, { responseType: 'base64' });
+    const content = await NS.api.request(meta.contentUrl, { responseType: 'base64', contentHash: meta.contentHash });
     const src = `data:${meta.contentType};base64,${content.data}`;
     if (key && src.length <= IMAGE_CACHE_LIMIT) {
       while (imageCacheSize + src.length > IMAGE_CACHE_LIMIT) {
@@ -967,6 +979,7 @@
       state.workspace.corners = { ...savedCorners, points: savedCorners.points.map((point) => point && { ...point }) };
     }
     if (changedLayer) {
+      resetSyncHealth();
       clearReferences();
       state.workspace.defaultLocation = null;
       state.workspace.transferPreview = null;
@@ -992,16 +1005,25 @@
     baselineHash=canonicalHash(editorGeoJSON || snapshot.geojson,
       (snapshot.images||[]).map((m)=>({id:m.id,opacity:m.opacity,scale:m.scale,rotation:m.rotation,x:m.x,y:m.y,
         naturalWidth:m.naturalWidth,naturalHeight:m.naturalHeight,geo:m.geo||{}})));
+    remoteRefreshRequired = false;
     return true;
   }
 
   async function syncNow(force = false, { flushOnly = false } = {}) {
     if(((workspaceBusy || imageMutationBusy) && !force) || state.workspace.layerId == null) return;
+    if (syncRecoveryError || imageMutationError) {
+      if (force) throw syncRecoveryError || imageMutationError;
+      return;
+    }
+    // Browser connectivity hints can be false while a local backend is reachable.
+    // Attempt the request and surface failures instead of leaving a stale saved status.
+    if (!force && Date.now() < nextSyncAttemptAt) return;
     if (syncInFlight) {
       await syncInFlight;
       if (!flushOnly) return;
       // Re-read after an existing sync, so edits made while it ran are not skipped.
     }
+    let mutationStarted = false;
     syncInFlight = (async () => {
       do {
         const geojson = await bridge('geojson-read');
@@ -1009,6 +1031,7 @@
         if (localHash !== baselineHash) {
           W.validateExternalVertices(geojson, state.workspace.referenceFeatures);
           setWorkspaceStatus('저장 중…');
+          mutationStarted = true;
           const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`, {
             method: 'PUT',
             body: { expectedRevision: state.workspace.revision, protocolVersion: 2,
@@ -1016,6 +1039,12 @@
               defaultLocation: W.locationValue(state.workspace.defaultLocation),
               referenceRevisions: referenceRevisions(geojson), images: transformPayload() },
           });
+          mutationStarted = false;
+          // Acknowledged writes must advance the revision even if a subsequent image/corner
+          // read fails. The local graph remains intact and is safe to retry against this version.
+          state.workspace.revision = response.data.revision;
+          baselineHash = localHash;
+          remoteRefreshRequired = true;
           // Apply normalized node/edge coordinates only if the saved version is still current.
           if (!await applyRemoteSnapshot(response.data, undefined, localHash)) {
             state.workspace.revision = response.data.revision;
@@ -1025,11 +1054,15 @@
             return;
           }
           setWorkspaceStatus(`저장됨 · revision ${response.data.revision}`);
-        } else if (!flushOnly && !state.workspace.corners.dirty) {
+        } else if (!flushOnly && !state.workspace.corners.dirty && !document.hidden) {
+          if (!await remoteSnapshotChanged()) {
+            if (state.workspace.error) setWorkspaceStatus(`동기화됨 · revision ${state.workspace.revision}`);
+            return;
+          }
           const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/snapshot?protocolVersion=2`);
           requireSnapshotV2(response.data);
           const dependenciesChanged = revisionHash(response.data.referenceRevisions) !== revisionHash(state.workspace.referenceRevisions);
-          if (response.data.revision > state.workspace.revision || dependenciesChanged) {
+          if (remoteRefreshRequired || response.data.revision > state.workspace.revision || dependenciesChanged) {
             if (await applyRemoteSnapshot(response.data, undefined, localHash, false, true)) {
               setWorkspaceStatus(`원격 변경 반영 · revision ${response.data.revision}`);
             }
@@ -1039,7 +1072,40 @@
         return;
       } while (flushOnly);
     })();
-    try { return await syncInFlight; } finally { syncInFlight = null; }
+    try {
+      const result = await syncInFlight;
+      syncFailures = 0; nextSyncAttemptAt = 0;
+      return result;
+    } catch (error) {
+      syncFailures++;
+      nextSyncAttemptAt = Date.now() + Math.min(120000, 10000 * 2 ** Math.min(syncFailures - 1, 4));
+      if ((error.status === 409 && (mutationStarted || error.mutationConflict))
+        || ((mutationStarted || error.uncertainMutation) && (!error.status || error.status >= 500))) {
+        syncRecoveryError = error;
+        if (error.status !== 409) error.recoveryMessage ||= '저장 결과 확인이 필요해 자동 저장을 멈췄습니다. 로컬 편집은 유지됩니다. GeoJSON을 내보낸 뒤 원격 다시 불러오기로 서버 상태를 확인하세요.';
+      }
+      throw error;
+    } finally { syncInFlight = null; }
+  }
+
+  function resetSyncHealth() {
+    syncFailures = 0; nextSyncAttemptAt = 0; syncRecoveryError = null;
+  }
+
+  async function remoteSnapshotChanged() {
+    if (remoteRefreshRequired) return true;
+    if (!revisionPollingSupported) return true;
+    try {
+      const response = await NS.api.request(`/api/admin/layers/${state.workspace.layerId}/revision?protocolVersion=2`);
+      const remote = requireSnapshotV2(response.data);
+      return remote.revision !== state.workspace.revision
+        || revisionHash(remote.referenceRevisions) !== revisionHash(state.workspace.referenceRevisions);
+    } catch (error) {
+      // Rolling upgrades: older backends retain the existing snapshot polling behavior.
+      if (![404, 405].includes(error.status)) throw error;
+      revisionPollingSupported = false;
+      return true;
+    }
   }
 
   function revisionHash(revisions) { return JSON.stringify(Object.entries(revisions || {}).sort(([a], [b]) => a.localeCompare(b))); }
@@ -1131,6 +1197,11 @@
       state.workspace.corners = { ...saved, points: saved.points.map((point) => ({ ...point })) };
       setWorkspaceStatus(`기준점 저장됨 · revision ${response.data.revision}`);
     } catch (error) {
+      if (error.status === 409) error.mutationConflict = true;
+      if (!error.status || error.status >= 500) {
+        error.uncertainMutation = true;
+        error.recoveryMessage = '기준점 저장 결과 확인이 필요해 자동 저장을 멈췄습니다. 입력 좌표와 GeoJSON을 백업한 뒤 원격 다시 불러오기로 서버 상태를 확인하세요.';
+      }
       draft.error = error.status === 409 ? '기준점 저장 충돌 · 좌표는 유지됩니다. 좌표를 백업한 뒤 원격 다시 불러오기를 사용하세요.'
         : `기준점 저장 실패 · 좌표는 유지됩니다: ${error.message}`;
       throw error;

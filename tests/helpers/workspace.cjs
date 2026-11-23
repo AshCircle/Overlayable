@@ -56,6 +56,7 @@ async function workspace() {
     createElement(tag) { const el = new Element(tag); h.elements.push(el); return el; },
     createElementNS(namespace, tag) { const el = new Element(tag); h.elements.push(el); return el; },
     createTextNode(text) { const el = new Element('#text'); el.textContent = text; return el; }, addEventListener() {} };
+  h.document = document;
   const window = { innerWidth: 1000, innerHeight: 800,
     addEventListener(name, fn) { (listeners.get(name) || listeners.set(name, []).get(name)).push(fn); },
     postMessage(message) {
@@ -101,6 +102,12 @@ async function workspace() {
       return { data: { layerId: id, revision: snapshot.revision, ...structuredClone(h.corners.get(id) || { imageId: null, points: [] }) } };
     }
     const match = url.match(/^\/api\/admin\/layers\/(\d+)\/snapshot\?protocolVersion=2$/);
+    const revision = url.match(/^\/api\/admin\/layers\/(\d+)\/revision\?protocolVersion=2$/);
+    if (revision) {
+      const saved = h.snapshots.get(Number(revision[1]));
+      return { data: { layerId: saved.layerId, revision: saved.revision, protocolVersion: saved.protocolVersion,
+        referenceRevisions: structuredClone(saved.referenceRevisions || {}) } };
+    }
     if (match) {
       const id = Number(match[1]);
       const saved = h.snapshots.get(id);
@@ -126,7 +133,11 @@ async function workspace() {
         return h.requestHook ? h.requestHook(url, options) : h.defaultRequest(url, options);
       } },
   };
-  const context = vm.createContext({ window, document, navigator: { platform: 'MacIntel' }, crypto: webcrypto,
+  let now = Date.now();
+  h.advanceTime = ms => { now += ms; };
+  class Clock extends Date { static now() { return now; } }
+  h.navigator = { platform: 'MacIntel' };
+  const context = vm.createContext({ window, document, navigator: h.navigator, crypto: webcrypto, Date: Clock,
     location: { origin: 'https://geojson.io' }, console, URL, Blob,
     chrome: { runtime: { onMessage: { addListener() {} } } },
     MutationObserver: class { observe() {} }, confirm: (message) => { h.confirmations.push(message); return true; },

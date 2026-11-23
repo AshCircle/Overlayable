@@ -44,6 +44,7 @@
     img.className = 'imgovl-overlay-img';
     img.alt = '';
     img.draggable = false; // 브라우저 기본 이미지 드래그(고스트) 방지
+    img.decoding = 'async';
 
     // 회전 핸들 연결선 + 회전 핸들(상단).
     const rotLine = document.createElement('div');
@@ -68,7 +69,7 @@
     frame.appendChild(rotHandle);
     for (const h of handleEls) frame.appendChild(h);
 
-    return { frame, img, handles, handleEls, rotHandle };
+    return { frame, img, handles, handleEls, rotHandle, src: null };
   }
 
   // 한 사진의 상태를 해당 프레임 DOM에 반영한다.
@@ -84,10 +85,10 @@
 
     // src 는 표시 여부와 무관하게 먼저 동기화한다.
     // (load 이벤트가 떠야 naturalW/H 가 채워지고, 그래야 아래 표시 조건이 충족된다)
-    if (photo.src) {
-      if (img.getAttribute('src') !== photo.src) img.src = photo.src;
-    } else if (img.getAttribute('src')) {
-      img.removeAttribute('src');
+    if (els.src !== photo.src) {
+      if (photo.src) img.src = photo.src;
+      else img.removeAttribute('src');
+      els.src = photo.src;
     }
 
     // 카메라(지도 줌) 유도 scale 은 슬라이더 범위를 벗어날 수 있으므로 클램프 없이 그대로 쓴다
