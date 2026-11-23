@@ -152,11 +152,14 @@
   position: fixed !important;
   top: 16px !important;
   right: 16px !important;
+  display: flex !important;
+  flex-direction: column !important;
   z-index: 2147483647 !important; /* 오버레이보다 위 → 항상 조작 가능 */
   pointer-events: auto !important;
   box-sizing: border-box !important;
   width: 320px !important;
   max-width: calc(100vw - 32px) !important;
+  max-height: calc(100dvh - 32px) !important;
   margin: 0 !important;
   padding: 0 !important;
   border: 1px solid rgba(255, 255, 255, 0.08) !important;
@@ -182,6 +185,7 @@
 /* 헤더 */
 .imgovl-header {
   display: flex !important;
+  flex: 0 0 auto !important;
   align-items: center !important;
   gap: 8px !important;
   padding: 10px 12px !important;
@@ -230,9 +234,12 @@
   background: rgba(255, 255, 255, 0.1) !important;
 }
 
-/* 본문 */
+/* 본문만 스크롤해 작은 창에서도 하단 컨트롤에 접근하고 헤더는 유지한다. */
 .imgovl-body {
   display: block !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: contain !important;
   padding: 12px !important;
 }
 .imgovl-panel.imgovl-collapsed .imgovl-body {
@@ -534,3 +541,61 @@
 .imgovl-workspace-v2 button:disabled { opacity: .45 !important; cursor: default !important; }
 
 .imgovl-upload-disabled { opacity: .4 !important; cursor: default !important; }
+
+/* Letter + color markings remain identifiable without relying on color alone. */
+.imgovl-marks-overlay {
+  position: fixed !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  z-index: 2147483646 !important;
+  pointer-events: none !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
+}
+.imgovl-marks-overlay * { pointer-events: none !important; }
+.imgovl-mark-palette {
+  display: grid !important;
+  grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
+  gap: 4px !important;
+  margin: 9px 0 !important;
+}
+.imgovl-mark-palette .imgovl-mark-chip {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-width: 0 !important;
+  height: 50px !important;
+  padding: 4px 0 !important;
+  border: 2px solid transparent !important;
+  border-radius: 7px !important;
+  background: var(--imgovl-mark-color) !important;
+  color: var(--imgovl-mark-ink) !important;
+  box-sizing: border-box !important;
+  line-height: 1.2 !important;
+}
+.imgovl-mark-letter {
+  color: inherit !important;
+  font: 800 17px/1.25 system-ui, sans-serif !important;
+}
+.imgovl-mark-name {
+  color: inherit !important;
+  font: 600 10px/1.4 system-ui, sans-serif !important;
+  white-space: nowrap !important;
+}
+.imgovl-mark-palette .imgovl-mark-chip:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, .75) !important;
+}
+.imgovl-mark-palette .imgovl-mark-chip[aria-pressed="true"] {
+  border-color: #fff !important;
+  box-shadow: 0 0 0 2px #0f172a, 0 0 0 3px #fff !important;
+}
+.imgovl-mark-palette .imgovl-mark-chip[aria-pressed="mixed"] {
+  border-color: #fff !important;
+  border-style: dashed !important;
+}
+.imgovl-mark-palette .imgovl-mark-chip:focus-visible {
+  outline: 2px solid #fff !important;
+  outline-offset: 3px !important;
+}

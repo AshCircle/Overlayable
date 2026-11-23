@@ -57,7 +57,7 @@ function editableBridge() {
     document: { querySelectorAll: () => [host] }, location: { origin: 'https://geojson.io' },
     setInterval() {}, clearInterval() {}, setTimeout: (fn) => queueMicrotask(fn),
   });
-  return { sources, layers, callbacks, messages, data, async send(type, payload = {}) {
+  return { sources, layers, callbacks, messages, data, map, async send(type, payload = {}) {
     listener({ source: window, data: { source: 'overlayable-content', type, requestId: 'test', ...payload } });
     await new Promise(setImmediate);
     return messages.at(-1);
@@ -77,6 +77,63 @@ test('reference map source stays outside editor persistence and survives map sty
   assert.equal(h.sources.size, 1); assert.equal(h.layers.size, 2);
   await h.send('references-set', { geojson: { type: 'FeatureCollection', features: [] } });
   assert.equal(h.sources.size, 0); assert.equal(h.layers.size, 0);
+});
+
+test('mark annotations use live projection and viewport offsets without entering editor data', async () => {
+  const h = editableBridge();
+  const owned = { type: 'Feature', id: 'owned', geometry: { type: 'Point', coordinates: [1, 2] } };
+  h.data.featureMap.set('owned', { id: 'owned', feature: owned });
+  h.map.getContainer = () => ({ getBoundingClientRect: () => ({ left: 20, top: 30, width: 1000, height: 800 }) });
+  h.map.getBearing = () => 45;
+  h.map.getPitch = () => 30;
+  let shift = 0;
+  h.map.project = (coordinate) => Array.isArray(coordinate)
+    ? { x: coordinate[0] * 10 + shift, y: coordinate[1] * 20 - shift } : { x: 500, y: 400 };
+  const annotations = { type: 'FeatureCollection', features: [
+    { type: 'Feature', id: 'node', properties: { overlayableMark: 'A' }, geometry: { type: 'Point', coordinates: [1, 2] } },
+    { type: 'Feature', id: 'edge', properties: { overlayableMark: 'G' }, geometry: { type: 'LineString', coordinates: [[1, 2], [3, 4], [5, 6]] } },
+  ] };
+  const camera = await h.send('marks-set', { geojson: annotations });
+  assert.equal(camera.type, 'camera');
+  assert.equal(camera.pitch, 30);
+  assert.equal(camera.bearing, 45);
+  assert.deepEqual(JSON.parse(JSON.stringify(camera.marks)), [
+    { id: 'node', code: 'A', type: 'Point', points: [{ x: 30, y: 70 }] },
+    { id: 'edge', code: 'G', type: 'LineString', points: [{ x: 30, y: 70 }, { x: 50, y: 110 }, { x: 70, y: 150 }] },
+  ]);
+  shift = 100;
+  h.callbacks.get('move')();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages.at(-1).marks[0].points)), [{ x: 130, y: -30 }]);
+  h.map.getContainer = () => ({ getBoundingClientRect: () => ({ left: 50, top: 60, width: 800, height: 600 }) });
+  h.callbacks.get('resize')();
+  assert.deepEqual(JSON.parse(JSON.stringify(h.messages.at(-1).marks[0].points)), [{ x: 160, y: 0 }]);
+  const read = await h.send('geojson-read');
+  assert.deepEqual(JSON.parse(JSON.stringify(read.geojson.features)), [owned]);
+  assert.equal(h.sources.size, 0);
+  const cleared = await h.send('marks-set', { geojson: { type: 'FeatureCollection', features: [] } });
+  assert.equal(cleared.marks.length, 0);
+});
+
+test('malformed markings and failed projections cannot break camera updates', async () => {
+  const h = editableBridge();
+  const mark = (code, type, coordinates, id = code) => ({ type: 'Feature', id, properties: { overlayableMark: code }, geometry: { type, coordinates } });
+  h.map.project = (coordinate) => {
+    if (!Array.isArray(coordinate)) return { x: 500, y: 400 };
+    if (coordinate[0] === 7) throw new Error('projection failed');
+    if (coordinate[0] === 8) return { x: Infinity, y: 1 };
+    return { x: coordinate[0], y: coordinate[1] };
+  };
+  const camera = await h.send('marks-set', { geojson: { type: 'FeatureCollection', features: [
+    null, {}, mark('Z', 'Point', [1, 2]), mark('AA', 'Point', [1, 2]), mark('a', 'Point', [1, 2]),
+    mark('A', 'Polygon', [[[1, 2], [3, 4]]]), mark('A', 'Point', ['1', 2]), mark('A', 'Point', [1, NaN]),
+    mark('A', 'Point', [181, 2]), mark('A', 'Point', [1, 91]), mark('A', 'Point', []),
+    mark('B', 'LineString', [[1, 2]]), mark('B', 'LineString', [[1, 2], null]),
+    mark('C', 'Point', [7, 2]), mark('D', 'Point', [8, 2]), mark('E', 'Point', [3, 4]),
+  ] } });
+  assert.equal(camera.type, 'camera');
+  assert.deepEqual(JSON.parse(JSON.stringify(camera.marks)), [{ id: 'E', code: 'E', type: 'Point', points: [{ x: 3, y: 4 }] }]);
+  const cleared = await h.send('marks-set', { geojson: null });
+  assert.equal(cleared.marks.length, 0);
 });
 
 test('bridge exposes every selected Point and applies one metadata-preserving transaction', async () => {
