@@ -19,7 +19,7 @@
       type: 'OVERLAYABLE_API',
       path, method: options?.method || 'GET', body: options?.body,
       bodyType: options?.bodyType, responseType: options?.responseType,
-      headers: options?.headers,
+      headers: options?.headers, contentHash: options?.contentHash,
     });
     if (!response?.ok) {
       const error = new Error(response?.data?.error?.message || response?.error || `HTTP ${response?.status}`);

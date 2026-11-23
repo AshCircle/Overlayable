@@ -119,16 +119,27 @@
     });
     const endpointSearch = input('현재·참조 노드 이름·건물·층·ID 검색');
     const endpointSelect = select(); endpointSelect.setAttribute('aria-label', '연결할 노드');
+    let endpointInputs = [], endpointCandidates = [], endpointQuery = null;
     function renderEndpoints() {
+      const ws = state?.workspace || {};
       const query = endpointSearch.value.trim().toLowerCase();
-      const local = (state?.workspace.ownedPoints || []).filter((feature) => feature.properties?.overlayable?.nodeId != null).map((feature) => ({ ...feature, properties: { ...feature.properties, overlayable: { ...feature.properties.overlayable, ownerLayerId: state.workspace.layerId } } }));
-      const values = [...local, ...(state?.workspace.referenceFeatures || [])].filter((feature) => feature.geometry?.type === 'Point').map((feature) => {
-        const props = feature.properties, meta = props.overlayable;
-        const owner = state.workspace.layers.find((x) => x.id === meta.ownerLayerId);
-        const actualLocation = W.locations(owner).find((value) => W.locationKey(value) === W.locationKey(props.location)) || props.location;
-        const text = `${props.name || '이름 없음'} · ${W.locationLabel(actualLocation)} · ${owner?.name || `레이어 #${meta.ownerLayerId}`} · Node #${meta.nodeId}`;
-        return [meta.nodeId, text];
-      }).filter(([, text]) => text.toLowerCase().includes(query));
+      const inputs = [ws.ownedPoints, ws.referenceFeatures, ws.layers, ws.layerId];
+      if (inputs.some((value, index) => value !== endpointInputs[index])) {
+        endpointInputs = inputs; endpointQuery = null;
+        const owners = new Map((ws.layers || []).map((layer) => [layer.id, layer]));
+        const candidates = [...(ws.ownedPoints || []).map((feature) => [feature, ws.layerId]),
+          ...(ws.referenceFeatures || []).map((feature) => [feature, feature.properties?.overlayable?.ownerLayerId])];
+        endpointCandidates = candidates.filter(([feature]) => feature.geometry?.type === 'Point'
+          && feature.properties?.overlayable?.nodeId != null).map(([feature, ownerLayerId]) => {
+          const props = feature.properties, meta = props.overlayable, owner = owners.get(ownerLayerId);
+          const actualLocation = W.locations(owner).find((value) => W.locationKey(value) === W.locationKey(props.location)) || props.location;
+          const text = `${props.name || '이름 없음'} · ${W.locationLabel(actualLocation)} · ${owner?.name || `레이어 #${ownerLayerId}`} · Node #${meta.nodeId}`;
+          return [meta.nodeId, text];
+        });
+      }
+      if (endpointQuery === query) return;
+      endpointQuery = query;
+      const values = endpointCandidates.filter(([, text]) => text.toLowerCase().includes(query));
       const previous = endpointSelect.value;
       options(endpointSelect, [['', '연결할 노드 선택…'], ...values], values.some(([id]) => String(id) === previous) ? previous : '');
     }

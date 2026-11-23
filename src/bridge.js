@@ -32,6 +32,7 @@
   let editorData = null;
   let editorDataSource = null;
   let editorTimer = null;
+  let publishedFeatures = null, publishedSelection = '', publishedReady = false;
   let referenceGeoJSON = { type: 'FeatureCollection', features: [] };
   const REFERENCE_SOURCE = 'overlayable-reference-nodes';
   const REFERENCE_LAYER = 'overlayable-reference-nodes-circle';
@@ -219,10 +220,10 @@
     if (editorPersistence && editorData) editor = { persistence: editorPersistence, data: editorData };
   }
 
-  function refreshEditor() {
+  function refreshEditor(notify = true) {
     if (editorDataSource && editorPersistence) {
       editor = { persistence: editorPersistence, data: editorDataSource.store.get(editorDataSource.atom) };
-      postGeoJSON();
+      if (notify) postGeoJSON();
       return;
     }
     const containers = document.querySelectorAll('.mapboxgl-map');
@@ -230,7 +231,7 @@
     if (editorDataSource && editorPersistence) {
       editor = { persistence: editorPersistence, data: editorDataSource.store.get(editorDataSource.atom) };
     }
-    if (editor) postGeoJSON();
+    if (editor && notify) postGeoJSON();
   }
 
   function scanFiberForEditor(el) {
@@ -251,10 +252,6 @@
     return { type: 'FeatureCollection', features: Array.from(editor.data.featureMap.values(), (wrapped) => wrapped.feature) };
   }
 
-  function selectedFeature() {
-    return selectedFeatures()[0] || null;
-  }
-
   function selectedFeatures() {
     if (!editor) return [];
     const selection = editor.data.selection;
@@ -266,14 +263,33 @@
     }).filter(Boolean);
   }
 
-  function postGeoJSON(requestId) {
+  function postGeoJSON(requestId, force = false) {
+    const features = editor?.data.featureMap;
+    const ready = features instanceof Map;
+    const selection = editor?.data.selection;
+    const selectionKey = JSON.stringify(selection?.ids || (selection?.id ? [selection.id] : []));
+    // The editor replaces feature objects on edits. Compare their identities before
+    // asking postMessage to clone an entire floor; idle polls need no graph payload.
+    // Explicit reads still take a fresh snapshot, including any in-place mutations.
+    if (!requestId && !force && publishedReady === ready && publishedSelection === selectionKey
+      && publishedFeatures && publishedFeatures.length === (ready ? features.size : 0)) {
+      let index = 0, unchanged = true;
+      if (ready) for (const [id, wrapped] of features) {
+        const previous = publishedFeatures[index++];
+        if (previous[0] !== id || previous[1] !== wrapped.feature) { unchanged = false; break; }
+      }
+      if (unchanged) return;
+    }
     const geojson = featureCollection();
+    const selected = selectedFeatures();
+    publishedReady = ready; publishedSelection = selectionKey;
+    publishedFeatures = ready ? Array.from(features, ([id, wrapped]) => [id, wrapped.feature]) : [];
     window.postMessage({ source: 'overlayable-bridge', type: 'geojson-state', requestId,
-      ready: !!geojson, geojson, selectedFeature: selectedFeature(), selectedFeatures: selectedFeatures() }, location.origin);
+      ready: !!geojson, geojson, selectedFeature: selected[0] || null, selectedFeatures: selected }, location.origin);
   }
 
   async function replaceGeoJSON(geojson, requestId) {
-    refreshEditor();
+    refreshEditor(false);
     if (!editor || !geojson || !Array.isArray(geojson.features)) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
     const oldIds = Array.from(editor.data.featureMap.keys());
     const seen = new Set();
@@ -285,11 +301,11 @@
       return { id, feature };
     });
     await editor.persistence.useTransact()({ note: 'Loaded HongGwart layer', deleteFeatures: oldIds, putFeatures });
-    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+    setTimeout(() => { refreshEditor(false); postGeoJSON(requestId, true); }, 0);
   }
 
   async function patchSelected(properties, requestId) {
-    refreshEditor();
+    refreshEditor(false);
     if (!editor) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
     const selection = editor.data.selection;
     const id = selection && (selection.id || (selection.ids && selection.ids[0]));
@@ -299,11 +315,11 @@
     }
     await editor.persistence.useTransact()({ note: 'Edited HongGwart node', deleteFeatures: [],
       putFeatures: [{ ...wrapped, feature: { ...wrapped.feature, properties: { ...(wrapped.feature.properties || {}), ...properties } } }] });
-    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+    setTimeout(() => { refreshEditor(false); postGeoJSON(requestId, true); }, 0);
   }
 
   async function updateFeatures(features, requestId, allowInsert = false) {
-    refreshEditor();
+    refreshEditor(false);
     if (!editor || !Array.isArray(features)) throw new Error('geojson.io 편집기를 찾지 못했습니다.');
     const putFeatures = features.map((feature) => {
       const wrapped = editor.data.featureMap.get(feature.id)
@@ -312,7 +328,7 @@
       return { ...(wrapped || { id: feature.id }), feature };
     });
     await editor.persistence.useTransact()({ note: 'Edited HongGwart graph', deleteFeatures: [], putFeatures });
-    setTimeout(() => { refreshEditor(); postGeoJSON(requestId); }, 0);
+    setTimeout(() => { refreshEditor(false); postGeoJSON(requestId, true); }, 0);
   }
 
   function renderReferences() {
@@ -448,6 +464,7 @@
     editorPersistence = null;
     editorData = null;
     editorDataSource = null;
+    publishedFeatures = null;
     if (rectTimer) {
       clearInterval(rectTimer);
       rectTimer = null;
@@ -491,8 +508,8 @@
     if (e.source !== window) return;
     const d = e.data;
     if (!d || d.source !== 'overlayable-content') return;
-    if (d.type === 'ping') { if (map) post(); refreshEditor(); return; }
-    if (d.type === 'geojson-read') { refreshEditor(); postGeoJSON(d.requestId); return; }
+    if (d.type === 'ping') { if (map) post(); refreshEditor(false); postGeoJSON(undefined, true); return; }
+    if (d.type === 'geojson-read') { refreshEditor(false); postGeoJSON(d.requestId, true); return; }
     if (d.type === 'marks-set') {
       markedFeatures = readMarks(d.geojson);
       post(); return;

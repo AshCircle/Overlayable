@@ -329,10 +329,11 @@
             e.stopPropagation();
             handlers.onDelete(p.id);
           });
-          entry = { item, thumb, label };
+          thumb.decoding = 'async';
+          entry = { item, thumb, label, src: null };
           photoItems.set(p.id, entry);
         }
-        if (entry.thumb.getAttribute('src') !== p.src) entry.thumb.src = p.src;
+        if (entry.src !== p.src) { entry.thumb.src = p.src; entry.src = p.src; }
         const name = p.name || `사진 ${photos.length - idx}`;
         entry.label.textContent = name;
         entry.label.title = name;
@@ -344,10 +345,8 @@
       photoList.classList.toggle('imgovl-empty', photos.length === 0);
     }
 
-    // ---- 상태 → 컨트롤 역동기화 ----
-    function sync(state) {
-      renderPhotoList(state);
-
+    // Map frames only change transforms and pitch; leave graph/layer controls alone.
+    function syncCamera(state) {
       const selected = state.selectedId != null
         ? (state.photos || []).find((p) => p.id === state.selectedId)
         : null;
@@ -377,6 +376,13 @@
 
       // 선택된 사진이 없으면 변형/액션 컨트롤 비활성 표시.
       body.classList.toggle('imgovl-no-selection', !selected);
+      corners.sync(state);
+    }
+
+    // ---- 상태 → 컨트롤 역동기화 ----
+    function sync(state) {
+      renderPhotoList(state);
+      syncCamera(state);
 
       const ws = state.workspace || {};
       if (document.activeElement !== backendUrl) backendUrl.value = ws.baseUrl || 'http://localhost:8080';
@@ -438,11 +444,10 @@
       dropzone.classList.toggle('imgovl-upload-disabled', sharedPaths);
       copyLayerBtn.disabled = switching || !!ws.operationBusy || !activeLayer || activeLayer.requiresProtocolV2 || activeLayer.kind === 'SHARED_PATHS' || (activeLayer.locations || []).length > 1;
       advanced.sync(state);
-      corners.sync(state);
       verticalBtn.textContent = ws.connectionDraft ? '이 Point에 층 연결 완료' : '선택 Point에서 층 연결 시작';
     }
 
-    return { panel, sync, setCollapsed };
+    return { panel, sync, syncCamera, setCollapsed };
   }
 
   NS.panel = { create };
